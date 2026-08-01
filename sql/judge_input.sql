@@ -10,12 +10,12 @@ DECLARE $out_table AS String;
 
 $template = cast(FileContent("prompt_template.txt") as Utf8);
 
--- answer_a / answer_b приезжают как Optional<Yson>: при слабой схеме колонки,
--- которых нет в выведенной схеме, остаются yson-узлами. Прямого каста
--- Yson -> Utf8 в YQL нет (Cannot cast type Optional<Yson> into Utf8),
--- поэтому сначала достаём строку из узла, а уже её приводим к Utf8.
+-- Колонки с ответами приезжают как Optional<Yson>: при InferSchema = '1' схема
+-- выводится по первым строкам, и всё, что в неё не попало, остаётся yson-узлом.
+-- Прямого каста Yson -> Utf8 в YQL нет (Cannot cast type Optional<Yson> into
+-- Utf8), поэтому сначала достаём строку из узла, а уже её приводим к Utf8.
 -- Если колонка окажется обычной String/Utf8, ConvertToString с AutoConvert
--- отработает так же.
+-- отработает так же — хелпер безопасен при любой схеме.
 $as_utf8 = ($x) -> {
     RETURN CAST(Yson::ConvertToString($x) AS Utf8);
 };
@@ -172,10 +172,10 @@ SELECT
   t.*,
   Yson::ParseJson(
     $build_judge_input(
-      Yson::SerializeJson(Yson::From(dialog)),
+      Yson::SerializeJson(Yson::From(${global.dialog_column})),
       $template,
-      $as_utf8(answer_a),
-      $as_utf8(answer_b)
+      $as_utf8(${global.answer_1_column}),
+      $as_utf8(${global.answer_2_column})
     )
   ) AS infer_dialog
   without if exists t.tov_prompt, t._other, t.infer_dialog

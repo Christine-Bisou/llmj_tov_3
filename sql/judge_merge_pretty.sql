@@ -244,13 +244,15 @@ $winner_calc = (
 -- ========================= ВЫХОД 1: рабочая таблица =========================
 INSERT INTO {{output1}} WITH TRUNCATE
 SELECT
-    wc.* WITHOUT if exists
+    -- дополнительные колонки идут ДО wc.*: WITHOUT обязан быть последним в списке
+    $winner_source(wc.tov_winner, wc.answer_source_1, wc.answer_source_2) AS tov_winner_source,
+    wc.*,
+    WITHOUT IF EXISTS
         wc.dst, wc.dst_2, wc.dst_yson_direct, wc.dst_yson_reversed,
         wc.mk1, wc.mk2,
         wc.infer_dialog, wc.tov_prompt,
         wc.reasoning_dst, wc.reasoning_dst_2,
-        wc.model_winner_direct, wc.model_winner_reversed, wc.model_winner_reversed_normalized,
-    $winner_source(wc.tov_winner, wc.answer_source_1, wc.answer_source_2) AS tov_winner_source
+        wc.model_winner_direct, wc.model_winner_reversed, wc.model_winner_reversed_normalized
 FROM $winner_calc AS wc;
 
 -- ========================= ВЫХОД 2: формат разметки =========================

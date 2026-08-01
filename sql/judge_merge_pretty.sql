@@ -98,6 +98,12 @@ $score_final = ($dir, $rev, $md, $mr, $asp) -> {
     )) AS Int64);
 };
 
+-- Средний overall по двум проходам, без округления — этого ждут блоки,
+-- считающие агрегаты по таблице (m1_overall_avg / m2_overall_avg).
+$overall_avg = ($dir, $rev, $md, $mr) -> {
+    RETURN $avg2($score($dir, $md, 'overall'), $score($rev, $mr, 'overall'));
+};
+
 -- clc_metrics одного прохода — то, что уходит в соответствующий raw_output.
 $clc_pass = ($node, $model) -> {
     RETURN Just(Yson::From(<|
@@ -262,6 +268,10 @@ $parsed = (
         $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS clc_detail_1,
         $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation') AS clc_detail_2,
 
+        -- плоские колонки под агрегаты: Member not found: m1_overall_avg
+        $overall_avg(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS m1_overall_avg,
+        $overall_avg(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation') AS m2_overall_avg,
+
         -- маркеры: списком имён, флагами и человекочитаемой сводкой
         $markers_list(mk1)                   AS markers_1_list,
         $markers_list(mk2)                   AS markers_2_list,
@@ -286,7 +296,23 @@ $parsed = (
             parse_ok_reversed:                dst_yson_reversed IS NOT NULL,
             process_url:                      'https://nirvana.yandex-team.ru/process/9113ab38-0999-4125-b182-523e63252411',
             graph_owner:                      'kristisha'
-        |>))                                 AS meta_info
+        |>))                                 AS meta_info,
+
+        -- WITHOUT — последний элемент списка выборки, ДО FROM.
+        -- После FROM парсер его не примет: mismatched input 'WITHOUT' expecting ')'.
+        -- Нужен потому, что входная таблица уже может нести колонки с этими именами,
+        -- и без него в проекции окажется дубликат имени.
+        WITHOUT IF EXISTS
+            d.meta_info,
+            d.m1_overall_avg, d.m2_overall_avg,
+            d.model_winner_direct, d.model_winner_reversed, d.model_winner_reversed_normalized,
+            d.clc_metrics_1, d.clc_metrics_2,
+            d.clc_direct_1, d.clc_direct_2, d.clc_reversed_1, d.clc_reversed_2,
+            d.clc_detail_1, d.clc_detail_2,
+            d.markers_1, d.markers_2,
+            d.markers_1_list, d.markers_2_list,
+            d.markers_1_flags, d.markers_2_flags,
+            d.markers_1_notes, d.markers_2_notes
 
     FROM (
         SELECT
@@ -302,19 +328,6 @@ $parsed = (
         INNER JOIN {{input2}} AS i2
         USING (instruct_id)
     ) AS d
-
-    -- входная таблица уже может нести колонки с этими именами: без WITHOUT будет
-    -- дубликат имени в проекции и запрос не соберётся
-    WITHOUT IF EXISTS
-        d.meta_info,
-        d.model_winner_direct, d.model_winner_reversed, d.model_winner_reversed_normalized,
-        d.clc_metrics_1, d.clc_metrics_2,
-        d.clc_direct_1, d.clc_direct_2, d.clc_reversed_1, d.clc_reversed_2,
-        d.clc_detail_1, d.clc_detail_2,
-        d.markers_1, d.markers_2,
-        d.markers_1_list, d.markers_2_list,
-        d.markers_1_flags, d.markers_2_flags,
-        d.markers_1_notes, d.markers_2_notes
 );
 
 $winner_calc = (
@@ -328,9 +341,9 @@ $winner_calc = (
             WHEN model_winner_reversed_normalized = 'draw'
                 THEN model_winner_direct
             ELSE 'draw'
-        END AS tov_winner
+        END AS tov_winner,
+        WITHOUT IF EXISTS p.tov_winner
     FROM $parsed AS p
-    WITHOUT IF EXISTS p.tov_winner
 );
 
 -- ========================= СБОРКА РАЗМЕТКИ =========================

@@ -104,8 +104,8 @@ $overall_avg = ($dir, $rev, $md, $mr) -> {
     RETURN $avg2($score($dir, $md, 'overall'), $score($rev, $mr, 'overall'));
 };
 
--- clc_metrics одного прохода — то, что уходит в соответствующий raw_output.
-$clc_pass = ($node, $model) -> {
+-- pointwise одного прохода — то, что уходит в соответствующий raw_output.
+$pointwise_pass = ($node, $model) -> {
     RETURN Just(Yson::From(<|
         clarity:    $score_int($node, $model, 'clarity'),
         liveliness: $score_int($node, $model, 'liveliness'),
@@ -114,9 +114,9 @@ $clc_pass = ($node, $model) -> {
     |>));
 };
 
--- clc_metrics для одного ответа целиком: четыре числа, ничего лишнего.
+-- pointwise для одного ответа целиком: четыре числа, ничего лишнего.
 -- $md — ключ этого ответа в прямом прогоне, $mr — в обратном (там ответы переставлены).
-$clc = ($dir, $rev, $md, $mr) -> {
+$pointwise = ($dir, $rev, $md, $mr) -> {
     RETURN Just(Yson::From(<|
         clarity:    $score_final($dir, $rev, $md, $mr, 'clarity'),
         liveliness: $score_final($dir, $rev, $md, $mr, 'liveliness'),
@@ -125,9 +125,9 @@ $clc = ($dir, $rev, $md, $mr) -> {
     |>));
 };
 
--- Подробности по проходам и обоснования — отдельной колонкой, чтобы не засорять clc_metrics.
+-- Подробности по проходам и обоснования — отдельной колонкой, чтобы не засорять pointwise.
 -- Обоснования храним от обоих проходов: у обратного они часто содержательнее.
-$clc_detail = ($dir, $rev, $md, $mr) -> {
+$pointwise_detail = ($dir, $rev, $md, $mr) -> {
     RETURN Just(Yson::From(ToDict(ListMap($aspects, ($a) -> {
         RETURN AsTuple($a, Just(Yson::From(<|
             direct:            $score($dir, $md, $a),
@@ -259,14 +259,14 @@ $parsed = (
         $flip($verdict(dst_yson_reversed))   AS model_winner_reversed_normalized,
 
         -- метрики по каждому ответу: итог (среднее двух проходов) и каждый проход отдельно
-        $clc(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation')        AS clc_metrics_1,
-        $clc(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation')        AS clc_metrics_2,
-        $clc_pass(dst_yson_direct,   'model_1_evaluation')                                          AS clc_direct_1,
-        $clc_pass(dst_yson_direct,   'model_2_evaluation')                                          AS clc_direct_2,
-        $clc_pass(dst_yson_reversed, 'model_2_evaluation')                                          AS clc_reversed_1,
-        $clc_pass(dst_yson_reversed, 'model_1_evaluation')                                          AS clc_reversed_2,
-        $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS clc_detail_1,
-        $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation') AS clc_detail_2,
+        $pointwise(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation')        AS pointwise_1,
+        $pointwise(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation')        AS pointwise_2,
+        $pointwise_pass(dst_yson_direct,   'model_1_evaluation')                                          AS pointwise_direct_1,
+        $pointwise_pass(dst_yson_direct,   'model_2_evaluation')                                          AS pointwise_direct_2,
+        $pointwise_pass(dst_yson_reversed, 'model_2_evaluation')                                          AS pointwise_reversed_1,
+        $pointwise_pass(dst_yson_reversed, 'model_1_evaluation')                                          AS pointwise_reversed_2,
+        $pointwise_detail(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS pointwise_detail_1,
+        $pointwise_detail(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation') AS pointwise_detail_2,
 
         -- плоские колонки под агрегаты: Member not found: m1_overall_avg
         $overall_avg(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS m1_overall_avg,
@@ -306,9 +306,9 @@ $parsed = (
             d.meta_info,
             d.m1_overall_avg, d.m2_overall_avg,
             d.model_winner_direct, d.model_winner_reversed, d.model_winner_reversed_normalized,
-            d.clc_metrics_1, d.clc_metrics_2,
-            d.clc_direct_1, d.clc_direct_2, d.clc_reversed_1, d.clc_reversed_2,
-            d.clc_detail_1, d.clc_detail_2,
+            d.pointwise_1, d.pointwise_2,
+            d.pointwise_direct_1, d.pointwise_direct_2, d.pointwise_reversed_1, d.pointwise_reversed_2,
+            d.pointwise_detail_1, d.pointwise_detail_2,
             d.markers_1, d.markers_2,
             d.markers_1_list, d.markers_2_list,
             d.markers_1_flags, d.markers_2_flags,
@@ -378,8 +378,8 @@ $raw_markup = ($r) -> {
                 annotations:      $empty_list,
                 checkboxes_A:     $markers_to_checkboxes($r.mk1),
                 checkboxes_B:     $markers_to_checkboxes($r.mk2),
-                pointwise_A:      $r.clc_direct_1,
-                pointwise_B:      $r.clc_direct_2,
+                pointwise_A:      $r.pointwise_direct_1,
+                pointwise_B:      $r.pointwise_direct_2,
                 markers_A:        $r.markers_1_list,
                 markers_B:        $r.markers_2_list,
                 comment_A:        $yson_null,
@@ -402,8 +402,8 @@ $raw_markup = ($r) -> {
                 checkboxes_A:     $markers_to_checkboxes($r.mk1),
                 checkboxes_B:     $markers_to_checkboxes($r.mk2),
                 -- в обратном прогоне ответы переставлены: A — это model_2_evaluation
-                pointwise_A:      $r.clc_reversed_1,
-                pointwise_B:      $r.clc_reversed_2,
+                pointwise_A:      $r.pointwise_reversed_1,
+                pointwise_B:      $r.pointwise_reversed_2,
                 markers_A:        $r.markers_1_list,
                 markers_B:        $r.markers_2_list,
                 comment_A:        $yson_null,
@@ -440,9 +440,9 @@ $agg_markup = ($r) -> {
 
         -- звёзды по каждому ответу, сведённые по двум проходам.
         -- Разбивка по проходам и обоснования в разметку не идут — они остались
-        -- колонками clc_detail_1/2 в рабочей таблице.
-        pointwise_A: $r.clc_metrics_1,
-        pointwise_B: $r.clc_metrics_2,
+        -- колонками pointwise_detail_1/2 в рабочей таблице.
+        pointwise_A: $r.pointwise_1,
+        pointwise_B: $r.pointwise_2,
 
         markers_A:       $r.markers_1_list,
         markers_B:       $r.markers_2_list,

@@ -10,8 +10,14 @@ PRAGMA yt.InferSchema = '2';
 --                   dst_2 = выход ВТОРОГО этапа (звёзды + sbs_comparison).
 -- Ниже сохранена твоя проводка: прямой берём из i1.dst_2, обратный из i2.dst.
 -- Если обратный прогон тоже кладёт второй этап в dst_2 — поменяй на i2.dst_2.
+--
+-- Соответствие ответов и ключей во втором этапе:
+--   прямой прогон:  model_1_evaluation -> answer_1, model_2_evaluation -> answer_2
+--   обратный:       model_1_evaluation -> answer_2, model_2_evaluation -> answer_1
+-- Маркеры первого этапа перестановке не подвергались: ext_markers_1 — всегда answer_1.
 
 $yson_null = Just(Yson::From({}));
+$empty_list = ListCreate(String);
 
 $script = @@#py
 import json
@@ -51,84 +57,131 @@ def process_json(s):
 $process_json = Python3::process_json($script);
 
 -- ========================= ОЦЕНКИ ПО АСПЕКТАМ =========================
+$aspects = AsList('clarity', 'liveliness', 'connect', 'overall');
+
+-- Оценка аспекта одним проходом. Осознанно БЕЗ `?? 0.0`:
+-- отсутствующая оценка должна остаться null, иначе она утянет среднее вниз
+-- и в таблицу уедет честная на вид, но выдуманная двойка.
 -- ConvertToDouble вместо LookupInt64: переживёт и 4, и 4.0, и "4".
-$aspect = ($node, $model, $asp) -> {
+$score = ($node, $model, $asp) -> {
     RETURN Yson::ConvertToDouble(
         Yson::Lookup(Yson::Lookup(Yson::Lookup($node, $model), $asp), 'score')
-    ) ?? 0.0;
+    );
 };
 
-$aspect_why = ($node, $model, $asp) -> {
+$score_why = ($node, $model, $asp) -> {
     RETURN Yson::LookupString(
         Yson::Lookup(Yson::Lookup($node, $model), $asp), 'reasoning'
     ) ?? '';
 };
 
--- Итоговая оценка аспекта: среднее двух проходов, округлённое ВНИЗ.
--- 4 и 5 -> 4.5 -> 4. Именно это число мы и ставим.
-$final = ($dir, $rev, $md, $mr, $asp) -> {
-    RETURN CAST(Math::Floor(($aspect($dir, $md, $asp) + $aspect($rev, $mr, $asp)) / 2.0) AS Int64);
+-- Оценка одного прохода как целое.
+$score_int = ($node, $model, $asp) -> {
+    RETURN CAST(Math::Floor($score($node, $model, $asp)) AS Int64);
 };
 
--- clc_metrics для одного ответа: четыре числа, ничего лишнего.
+-- Среднее двух проходов. Если проход оценку не поставил — берём второй как есть,
+-- если не поставил ни один — остаётся null.
+$avg2 = ($a, $b) -> {
+    RETURN IF($a IS NULL OR $b IS NULL, COALESCE($a, $b), ($a + $b) / 2.0);
+};
+
+-- Итоговая оценка аспекта: среднее двух проходов, округлённое ВНИЗ.
+-- 4 и 5 -> 4.5 -> 4. Именно это число мы и ставим.
+$score_final = ($dir, $rev, $md, $mr, $asp) -> {
+    RETURN CAST(Math::Floor($avg2(
+        $score($dir, $md, $asp),
+        $score($rev, $mr, $asp)
+    )) AS Int64);
+};
+
+-- clc_metrics одного прохода — то, что уходит в соответствующий raw_output.
+$clc_pass = ($node, $model) -> {
+    RETURN Just(Yson::From(<|
+        clarity:    $score_int($node, $model, 'clarity'),
+        liveliness: $score_int($node, $model, 'liveliness'),
+        connect:    $score_int($node, $model, 'connect'),
+        overall:    $score_int($node, $model, 'overall')
+    |>));
+};
+
+-- clc_metrics для одного ответа целиком: четыре числа, ничего лишнего.
 -- $md — ключ этого ответа в прямом прогоне, $mr — в обратном (там ответы переставлены).
 $clc = ($dir, $rev, $md, $mr) -> {
     RETURN Just(Yson::From(<|
-        clarity:    $final($dir, $rev, $md, $mr, 'clarity'),
-        liveliness: $final($dir, $rev, $md, $mr, 'liveliness'),
-        connect:    $final($dir, $rev, $md, $mr, 'connect'),
-        overall:    $final($dir, $rev, $md, $mr, 'overall')
+        clarity:    $score_final($dir, $rev, $md, $mr, 'clarity'),
+        liveliness: $score_final($dir, $rev, $md, $mr, 'liveliness'),
+        connect:    $score_final($dir, $rev, $md, $mr, 'connect'),
+        overall:    $score_final($dir, $rev, $md, $mr, 'overall')
     |>));
 };
 
 -- Подробности по проходам и обоснования — отдельной колонкой, чтобы не засорять clc_metrics.
+-- Обоснования храним от обоих проходов: у обратного они часто содержательнее.
 $clc_detail = ($dir, $rev, $md, $mr) -> {
-    RETURN Just(Yson::From(<|
-        clarity: <|
-            direct: $aspect($dir, $md, 'clarity'), reversed: $aspect($rev, $mr, 'clarity'),
-            reasoning: $aspect_why($dir, $md, 'clarity')
-        |>,
-        liveliness: <|
-            direct: $aspect($dir, $md, 'liveliness'), reversed: $aspect($rev, $mr, 'liveliness'),
-            reasoning: $aspect_why($dir, $md, 'liveliness')
-        |>,
-        connect: <|
-            direct: $aspect($dir, $md, 'connect'), reversed: $aspect($rev, $mr, 'connect'),
-            reasoning: $aspect_why($dir, $md, 'connect')
-        |>,
-        overall: <|
-            direct: $aspect($dir, $md, 'overall'), reversed: $aspect($rev, $mr, 'overall'),
-            reasoning: $aspect_why($dir, $md, 'overall')
-        |>
-    |>));
+    RETURN Just(Yson::From(ToDict(ListMap($aspects, ($a) -> {
+        RETURN AsTuple($a, Just(Yson::From(<|
+            direct:            $score($dir, $md, $a),
+            reversed:          $score($rev, $mr, $a),
+            final:             $score_final($dir, $rev, $md, $mr, $a),
+            reasoning_direct:  $score_why($dir, $md, $a),
+            reasoning_reverse: $score_why($rev, $mr, $a)
+        |>)));
+    }))));
 };
 
 -- ========================= МАРКЕРЫ =========================
--- Новая структура: {имя_маркера: {is_present: bool, explanation: string}}
-$marker_names = AsList(
-    'empathy', 'subjectivity', 'tone_match', 'humor_metaphors', 'critical_tone',
-    'bad_intro', 'bad_proactivity', 'over_emotional', 'stuffy_bureaucratic',
-    'boundaries_violation', 'template_phrases', 'language_errors', 'inconsistency'
+-- Структура первого этапа: {имя_маркера: {is_present: bool, explanation: string}}
+$markers_plus = AsList(
+    'empathy', 'subjectivity', 'tone_match', 'humor_metaphors'
 );
 
-$is_on = ($m, $name) -> {
+$markers_minus = AsList(
+    'critical_tone', 'bad_intro', 'bad_proactivity', 'over_emotional',
+    'stuffy_bureaucratic', 'boundaries_violation', 'template_phrases',
+    'language_errors', 'inconsistency'
+);
+
+$marker_names = ListExtend($markers_plus, $markers_minus);
+
+$marker_on = ($m, $name) -> {
     RETURN Yson::ConvertToBool(Yson::Lookup(Yson::Lookup($m, $name), 'is_present')) ?? false;
 };
 
-$why = ($m, $name) -> {
+$marker_why = ($m, $name) -> {
     RETURN Yson::LookupString(Yson::Lookup($m, $name), 'explanation') ?? '';
 };
 
--- список имён сработавших маркеров — удобно глазами и для группировок
-$present = ($m) -> {
-    RETURN ListFilter($marker_names, ($n) -> { RETURN $is_on($m, $n); });
+$present_in = ($m, $names) -> {
+    RETURN ListFilter($names, ($n) -> { RETURN $marker_on($m, $n); });
 };
 
+-- список имён сработавших маркеров — удобно глазами и для группировок
+$markers_list = ($m) -> { RETURN $present_in($m, $marker_names); };
+
 -- нормализованный словарь: только флаги, без пояснений
-$flags = ($m) -> {
+$markers_flags = ($m) -> {
     RETURN Just(Yson::From(ToDict(ListMap($marker_names, ($n) -> {
-        RETURN AsTuple($n, $is_on($m, $n));
+        RETURN AsTuple($n, $marker_on($m, $n));
     }))));
+};
+
+-- пояснения — только по сработавшим, иначе тринадцать пустых строк на каждую пару
+$markers_notes = ($m) -> {
+    RETURN Just(Yson::From(ToDict(ListMap($markers_list($m), ($n) -> {
+        RETURN AsTuple($n, $marker_why($m, $n));
+    }))));
+};
+
+-- то, что читают глазами: плюсы, минусы и сколько их
+$markers_pretty = ($m) -> {
+    RETURN Just(Yson::From(<|
+        plus:        $present_in($m, $markers_plus),
+        minus:       $present_in($m, $markers_minus),
+        plus_count:  ListLength($present_in($m, $markers_plus)),
+        minus_count: ListLength($present_in($m, $markers_minus)),
+        notes:       $markers_notes($m)
+    |>));
 };
 
 -- чекбоксы в формате разметки.
@@ -136,24 +189,37 @@ $flags = ($m) -> {
 -- tov_plus_clarity убран: маркера ясности больше не существует.
 $markers_to_checkboxes = ($m) -> {
     RETURN Just(Yson::From(<|
-        point_bad_intro:              $is_on($m, 'bad_intro'),
-        point_bad_proactivity:        $is_on($m, 'bad_proactivity'),
-        tov_minus_addressing:         $is_on($m, 'inconsistency'),
-        tov_minus_boundary_violation: $is_on($m, 'boundaries_violation'),
-        tov_minus_cliches:            $is_on($m, 'template_phrases'),
-        tov_minus_dry:                $is_on($m, 'stuffy_bureaucratic'),
-        tov_minus_language_errors:    $is_on($m, 'language_errors'),
-        tov_minus_overemotional:      $is_on($m, 'over_emotional'),
-        tov_plus_empathy:             $is_on($m, 'empathy'),
-        tov_plus_humor:               $is_on($m, 'humor_metaphors'),
-        tov_plus_subject:             $is_on($m, 'subjectivity'),
-        tov_plus_tone_match:          $is_on($m, 'tone_match'),
-        tov_tone_unacceptable:        $is_on($m, 'critical_tone')
+        point_bad_intro:              $marker_on($m, 'bad_intro'),
+        point_bad_proactivity:        $marker_on($m, 'bad_proactivity'),
+        tov_minus_addressing:         $marker_on($m, 'inconsistency'),
+        tov_minus_boundary_violation: $marker_on($m, 'boundaries_violation'),
+        tov_minus_cliches:            $marker_on($m, 'template_phrases'),
+        tov_minus_dry:                $marker_on($m, 'stuffy_bureaucratic'),
+        tov_minus_language_errors:    $marker_on($m, 'language_errors'),
+        tov_minus_overemotional:      $marker_on($m, 'over_emotional'),
+        tov_plus_empathy:             $marker_on($m, 'empathy'),
+        tov_plus_humor:               $marker_on($m, 'humor_metaphors'),
+        tov_plus_subject:             $marker_on($m, 'subjectivity'),
+        tov_plus_tone_match:          $marker_on($m, 'tone_match'),
+        tov_tone_unacceptable:        $marker_on($m, 'critical_tone')
     |>));
 };
 
+-- ========================= ВЕРДИКТЫ =========================
+-- tie / both_bad / skip / пустое — всё это ничья. Нормализуем сразу,
+-- иначе 'tie' в прямом проходе против 'draw' в обратном считается расхождением
+-- и пара уезжает в weak, хотя проходы согласны.
+$norm = ($v) -> {
+    RETURN CASE
+        WHEN $v IS NULL                                 THEN 'draw'
+        WHEN $v IN ('tie', 'both_bad', 'skip', 'draw', '') THEN 'draw'
+        WHEN $v IN ('model_1', 'model_2')               THEN $v
+        ELSE 'draw'
+    END;
+};
+
 $verdict = ($node) -> {
-    RETURN Yson::LookupString(Yson::Lookup($node, 'sbs_comparison'), 'verdict') ?? 'draw';
+    RETURN $norm(Yson::LookupString(Yson::Lookup($node, 'sbs_comparison'), 'verdict'));
 };
 
 $sbs_why = ($node) -> {
@@ -183,19 +249,25 @@ $parsed = (
         $verdict(dst_yson_reversed)          AS model_winner_reversed,
         $flip($verdict(dst_yson_reversed))   AS model_winner_reversed_normalized,
 
-        -- красивые метрики по каждому ответу
+        -- метрики по каждому ответу: итог (среднее двух проходов) и каждый проход отдельно
         $clc(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation')        AS clc_metrics_1,
         $clc(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation')        AS clc_metrics_2,
+        $clc_pass(dst_yson_direct,   'model_1_evaluation')                                          AS clc_direct_1,
+        $clc_pass(dst_yson_direct,   'model_2_evaluation')                                          AS clc_direct_2,
+        $clc_pass(dst_yson_reversed, 'model_2_evaluation')                                          AS clc_reversed_1,
+        $clc_pass(dst_yson_reversed, 'model_1_evaluation')                                          AS clc_reversed_2,
         $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS clc_detail_1,
         $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation') AS clc_detail_2,
 
-        -- маркеры: подробно, флагами и списком имён
-        Just(Yson::From(mk1))                AS markers_1,
-        Just(Yson::From(mk2))                AS markers_2,
-        $flags(mk1)                          AS markers_1_flags,
-        $flags(mk2)                          AS markers_2_flags,
-        $present(mk1)                        AS markers_1_list,
-        $present(mk2)                        AS markers_2_list,
+        -- маркеры: списком имён, флагами и человекочитаемой сводкой
+        $markers_list(mk1)                   AS markers_1_list,
+        $markers_list(mk2)                   AS markers_2_list,
+        $markers_flags(mk1)                  AS markers_1_flags,
+        $markers_flags(mk2)                  AS markers_2_flags,
+        $markers_notes(mk1)                  AS markers_1_notes,
+        $markers_notes(mk2)                  AS markers_2_notes,
+        $markers_pretty(mk1)                 AS markers_1,
+        $markers_pretty(mk2)                 AS markers_2,
 
         Just(Yson::From(<|
             model_winner_direct:              $verdict(dst_yson_direct),
@@ -203,10 +275,12 @@ $parsed = (
             model_winner_reversed_normalized: $flip($verdict(dst_yson_reversed)),
             reasoning_direct:                 $sbs_why(dst_yson_direct),
             reasoning_reversed:               $sbs_why(dst_yson_reversed),
-            direct_m1_overall:                $aspect(dst_yson_direct,   'model_1_evaluation', 'overall'),
-            direct_m2_overall:                $aspect(dst_yson_direct,   'model_2_evaluation', 'overall'),
-            reversed_m1_overall:              $aspect(dst_yson_reversed, 'model_2_evaluation', 'overall'),
-            reversed_m2_overall:              $aspect(dst_yson_reversed, 'model_1_evaluation', 'overall'),
+            direct_m1_overall:                $score(dst_yson_direct,   'model_1_evaluation', 'overall'),
+            direct_m2_overall:                $score(dst_yson_direct,   'model_2_evaluation', 'overall'),
+            reversed_m1_overall:              $score(dst_yson_reversed, 'model_2_evaluation', 'overall'),
+            reversed_m2_overall:              $score(dst_yson_reversed, 'model_1_evaluation', 'overall'),
+            parse_ok_direct:                  dst_yson_direct IS NOT NULL,
+            parse_ok_reversed:                dst_yson_reversed IS NOT NULL,
             process_url:                      'https://nirvana.yandex-team.ru/process/9113ab38-0999-4125-b182-523e63252411',
             graph_owner:                      'kristisha'
         |>))                                 AS meta_info
@@ -219,11 +293,25 @@ $parsed = (
             -- маркеры первого этапа берём из прямой таблицы: там ext_markers_1
             -- относится к answer_1, ext_markers_2 — к answer_2, без перестановок
             i1.ext_markers_1                        AS mk1,
-            i1.ext_markers_2                        AS mk2
+            i1.ext_markers_2                        AS mk2,
+            WITHOUT IF EXISTS i1.dst_yson_direct, i1.dst_yson_reversed, i1.mk1, i1.mk2
         FROM {{input1}} AS i1
         INNER JOIN {{input2}} AS i2
         USING (instruct_id)
     ) AS d
+
+    -- входная таблица уже может нести колонки с этими именами: без WITHOUT будет
+    -- дубликат имени в проекции и запрос не соберётся
+    WITHOUT IF EXISTS
+        d.meta_info,
+        d.model_winner_direct, d.model_winner_reversed, d.model_winner_reversed_normalized,
+        d.clc_metrics_1, d.clc_metrics_2,
+        d.clc_direct_1, d.clc_direct_2, d.clc_reversed_1, d.clc_reversed_2,
+        d.clc_detail_1, d.clc_detail_2,
+        d.markers_1, d.markers_2,
+        d.markers_1_list, d.markers_2_list,
+        d.markers_1_flags, d.markers_2_flags,
+        d.markers_1_notes, d.markers_2_notes
 );
 
 $winner_calc = (
@@ -232,13 +320,14 @@ $winner_calc = (
         CASE
             WHEN model_winner_direct = model_winner_reversed_normalized
                 THEN model_winner_direct
-            WHEN model_winner_direct IN ('draw', 'tie')
+            WHEN model_winner_direct = 'draw'
                 THEN model_winner_reversed_normalized
-            WHEN model_winner_reversed_normalized IN ('draw', 'tie')
+            WHEN model_winner_reversed_normalized = 'draw'
                 THEN model_winner_direct
             ELSE 'draw'
         END AS tov_winner
     FROM $parsed AS p
+    WITHOUT IF EXISTS p.tov_winner
 );
 
 -- ========================= ВЫХОД 1: рабочая таблица =========================
@@ -246,16 +335,20 @@ INSERT INTO {{output1}} WITH TRUNCATE
 SELECT
     -- дополнительные колонки идут ДО wc.*: WITHOUT обязан быть последним в списке
     $winner_source(wc.tov_winner, wc.answer_source_1, wc.answer_source_2) AS tov_winner_source,
+    IF(wc.model_winner_direct = wc.model_winner_reversed_normalized, 'strong', 'weak') AS tov_winner_strength,
     wc.*,
     WITHOUT IF EXISTS
         wc.dst, wc.dst_2, wc.dst_yson_direct, wc.dst_yson_reversed,
-        wc.mk1, wc.mk2,
+        wc.mk1, wc.mk2, wc.ext_markers_1, wc.ext_markers_2,
         wc.infer_dialog, wc.tov_prompt,
         wc.reasoning_dst, wc.reasoning_dst_2,
         wc.model_winner_direct, wc.model_winner_reversed, wc.model_winner_reversed_normalized
 FROM $winner_calc AS wc;
 
 -- ========================= ВЫХОД 2: формат разметки =========================
+-- raw_tov_markup — по одному raw_output на проход; проходы обязаны отличаться,
+-- иначе агрегатор считает, что два «разметчика» дали идентичные оценки.
+-- Маркеры первого этапа общие для обоих проходов: этап 1 прогонялся один раз.
 INSERT INTO {{output2}} WITH TRUNCATE
 SELECT
     wc.instruct_id AS instruct_id,
@@ -269,48 +362,55 @@ SELECT
         source_A:   COALESCE(CAST(wc.answer_source_1 AS String), ''),
         source_B:   COALESCE(CAST(wc.answer_source_2 AS String), ''),
         checkboxes: Just(Yson::From(<||>)),
-        markers:    Just(Yson::From(AsList())),
+        markers:    $empty_list,
 
         raw_outputs: AsList(
             <|
-                worker_id:       'direct',
-                assignment_id:   $yson_null,
-                annotations:     Just(Yson::From(AsList())),
-                checkboxes_A:    $markers_to_checkboxes(wc.mk1),
-                checkboxes_B:    $markers_to_checkboxes(wc.mk2),
-                clc_metrics_A:   wc.clc_metrics_1,
-                clc_metrics_B:   wc.clc_metrics_2,
-                comment_A:       $yson_null,
-                comment_B:       $yson_null,
-                general_comment: COALESCE(Yson::LookupString(wc.meta_info, 'reasoning_direct'), ''),
-                comment_judge:   $yson_null,
-                diff_pa:         $yson_null,
-                diff_pa_winner:  $winner_source(wc.model_winner_direct, wc.answer_source_1, wc.answer_source_2),
-                direct_speech_A: $yson_null,
-                direct_speech_B: $yson_null,
-                markup_dt:       $yson_null,
-                skip:            $yson_null,
-                winner:          $winner_source(wc.model_winner_direct, wc.answer_source_1, wc.answer_source_2)
+                worker_id:        'direct',
+                assignment_id:    $yson_null,
+                assignment_link:  $yson_null,
+                annotations:      $empty_list,
+                checkboxes_A:     $markers_to_checkboxes(wc.mk1),
+                checkboxes_B:     $markers_to_checkboxes(wc.mk2),
+                clc_metrics_A:    wc.clc_direct_1,
+                clc_metrics_B:    wc.clc_direct_2,
+                markers_A:        wc.markers_1_list,
+                markers_B:        wc.markers_2_list,
+                comment_A:        $yson_null,
+                comment_B:        $yson_null,
+                general_comment:  COALESCE(Yson::LookupString(wc.meta_info, 'reasoning_direct'), ''),
+                comment_judge:    $yson_null,
+                diff_pa:          $yson_null,
+                diff_pa_winner:   $winner_source(wc.model_winner_direct, wc.answer_source_1, wc.answer_source_2),
+                direct_speech_A:  $yson_null,
+                direct_speech_B:  $yson_null,
+                markup_dt:        $yson_null,
+                skip:             $yson_null,
+                winner:           $winner_source(wc.model_winner_direct, wc.answer_source_1, wc.answer_source_2)
             |>,
             <|
-                worker_id:       'reverse',
-                assignment_id:   $yson_null,
-                annotations:     Just(Yson::From(AsList())),
-                checkboxes_A:    $markers_to_checkboxes(wc.mk1),
-                checkboxes_B:    $markers_to_checkboxes(wc.mk2),
-                clc_metrics_A:   wc.clc_metrics_1,
-                clc_metrics_B:   wc.clc_metrics_2,
-                comment_A:       $yson_null,
-                comment_B:       $yson_null,
-                general_comment: COALESCE(Yson::LookupString(wc.meta_info, 'reasoning_reversed'), ''),
-                comment_judge:   $yson_null,
-                diff_pa:         $yson_null,
-                diff_pa_winner:  $winner_source(wc.model_winner_reversed_normalized, wc.answer_source_1, wc.answer_source_2),
-                direct_speech_A: $yson_null,
-                direct_speech_B: $yson_null,
-                markup_dt:       $yson_null,
-                skip:            $yson_null,
-                winner:          $winner_source(wc.model_winner_reversed_normalized, wc.answer_source_1, wc.answer_source_2)
+                worker_id:        'reverse',
+                assignment_id:    $yson_null,
+                assignment_link:  $yson_null,
+                annotations:      $empty_list,
+                checkboxes_A:     $markers_to_checkboxes(wc.mk1),
+                checkboxes_B:     $markers_to_checkboxes(wc.mk2),
+                -- в обратном прогоне ответы переставлены: A — это model_2_evaluation
+                clc_metrics_A:    wc.clc_reversed_1,
+                clc_metrics_B:    wc.clc_reversed_2,
+                markers_A:        wc.markers_1_list,
+                markers_B:        wc.markers_2_list,
+                comment_A:        $yson_null,
+                comment_B:        $yson_null,
+                general_comment:  COALESCE(Yson::LookupString(wc.meta_info, 'reasoning_reversed'), ''),
+                comment_judge:    $yson_null,
+                diff_pa:          $yson_null,
+                diff_pa_winner:   $winner_source(wc.model_winner_reversed_normalized, wc.answer_source_1, wc.answer_source_2),
+                direct_speech_A:  $yson_null,
+                direct_speech_B:  $yson_null,
+                markup_dt:        $yson_null,
+                skip:             $yson_null,
+                winner:           $winner_source(wc.model_winner_reversed_normalized, wc.answer_source_1, wc.answer_source_2)
             |>
         )
     |>)) AS raw_tov_markup,
@@ -331,11 +431,15 @@ SELECT
 
         clc_metrics_A: wc.clc_metrics_1,
         clc_metrics_B: wc.clc_metrics_2,
+        clc_detail_A:  wc.clc_detail_1,
+        clc_detail_B:  wc.clc_detail_2,
 
-        markers_A: wc.markers_1_list,
-        markers_B: wc.markers_2_list,
+        markers_A:       wc.markers_1_list,
+        markers_B:       wc.markers_2_list,
+        markers_notes_A: wc.markers_1_notes,
+        markers_notes_B: wc.markers_2_notes,
 
-        annotations:      AsList(AsList(), AsList()),
+        annotations:      AsList($empty_list, $empty_list),
         comments_A:       AsList('', ''),
         comments_B:       AsList('', ''),
         general_comments: AsList(

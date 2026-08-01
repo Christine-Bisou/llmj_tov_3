@@ -378,8 +378,8 @@ $raw_markup = ($r) -> {
                 annotations:      $empty_list,
                 checkboxes_A:     $markers_to_checkboxes($r.mk1),
                 checkboxes_B:     $markers_to_checkboxes($r.mk2),
-                clc_metrics_A:    $r.clc_direct_1,
-                clc_metrics_B:    $r.clc_direct_2,
+                pointwise_A:      $r.clc_direct_1,
+                pointwise_B:      $r.clc_direct_2,
                 markers_A:        $r.markers_1_list,
                 markers_B:        $r.markers_2_list,
                 comment_A:        $yson_null,
@@ -402,8 +402,8 @@ $raw_markup = ($r) -> {
                 checkboxes_A:     $markers_to_checkboxes($r.mk1),
                 checkboxes_B:     $markers_to_checkboxes($r.mk2),
                 -- в обратном прогоне ответы переставлены: A — это model_2_evaluation
-                clc_metrics_A:    $r.clc_reversed_1,
-                clc_metrics_B:    $r.clc_reversed_2,
+                pointwise_A:      $r.clc_reversed_1,
+                pointwise_B:      $r.clc_reversed_2,
                 markers_A:        $r.markers_1_list,
                 markers_B:        $r.markers_2_list,
                 comment_A:        $yson_null,
@@ -438,10 +438,11 @@ $agg_markup = ($r) -> {
         checkboxes_A: $markers_to_checkboxes($r.mk1),
         checkboxes_B: $markers_to_checkboxes($r.mk2),
 
-        clc_metrics_A: $r.clc_metrics_1,
-        clc_metrics_B: $r.clc_metrics_2,
-        clc_detail_A:  $r.clc_detail_1,
-        clc_detail_B:  $r.clc_detail_2,
+        -- звёзды по каждому ответу, сведённые по двум проходам.
+        -- Разбивка по проходам и обоснования в разметку не идут — они остались
+        -- колонками clc_detail_1/2 в рабочей таблице.
+        pointwise_A: $r.clc_metrics_1,
+        pointwise_B: $r.clc_metrics_2,
 
         markers_A:       $r.markers_1_list,
         markers_B:       $r.markers_2_list,

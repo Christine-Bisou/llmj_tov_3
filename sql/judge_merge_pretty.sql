@@ -94,9 +94,9 @@ $final = ($dir, $rev, $md, $mr, $asp) -> {
     RETURN CAST(Math::Floor(($aspect($dir, $md, $asp) + $aspect($rev, $mr, $asp)) / 2.0) AS Int64);
 };
 
--- clc_metrics для одного ответа: четыре числа, ничего лишнего.
+-- pointwise для одного ответа: четыре числа, ничего лишнего.
 -- $md — ключ этого ответа в прямом прогоне, $mr — в обратном (там ответы переставлены).
-$clc = ($dir, $rev, $md, $mr) -> {
+$pointwise = ($dir, $rev, $md, $mr) -> {
     RETURN Just(Yson::From(<|
         clarity:    $final($dir, $rev, $md, $mr, 'clarity'),
         liveliness: $final($dir, $rev, $md, $mr, 'liveliness'),
@@ -105,8 +105,8 @@ $clc = ($dir, $rev, $md, $mr) -> {
     |>));
 };
 
--- Подробности по проходам и обоснования — отдельной колонкой, чтобы не засорять clc_metrics.
-$clc_detail = ($dir, $rev, $md, $mr) -> {
+-- Подробности по проходам и обоснования — отдельной колонкой, чтобы не засорять pointwise.
+$pointwise_detail = ($dir, $rev, $md, $mr) -> {
     RETURN Just(Yson::From(<|
         clarity: <|
             direct: $aspect($dir, $md, 'clarity'), reversed: $aspect($rev, $mr, 'clarity'),
@@ -208,10 +208,10 @@ $parsed = (
         $flip($verdict(dst_yson_reversed))   AS model_winner_reversed_normalized,
 
         -- красивые метрики по каждому ответу
-        $clc(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation')        AS clc_metrics_1,
-        $clc(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation')        AS clc_metrics_2,
-        $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS clc_detail_1,
-        $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation') AS clc_detail_2,
+        $pointwise(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation')        AS pointwise_1,
+        $pointwise(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation')        AS pointwise_2,
+        $pointwise_detail(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS pointwise_detail_1,
+        $pointwise_detail(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation') AS pointwise_detail_2,
 
         -- маркеры: подробно, флагами и списком имён
         Just(Yson::From(mk1))                AS markers_1,
@@ -310,8 +310,8 @@ SELECT
                 annotations:     Just(Yson::From(AsList())),
                 checkboxes_A:    $markers_to_checkboxes(wc.mk1),
                 checkboxes_B:    $markers_to_checkboxes(wc.mk2),
-                clc_metrics_A:   wc.clc_metrics_1,
-                clc_metrics_B:   wc.clc_metrics_2,
+                pointwise_A:     wc.pointwise_1,
+                pointwise_B:     wc.pointwise_2,
                 comment_A:       $yson_null,
                 comment_B:       $yson_null,
                 general_comment: COALESCE(Yson::LookupString(wc.meta_info, 'reasoning_direct'), ''),
@@ -330,8 +330,8 @@ SELECT
                 annotations:     Just(Yson::From(AsList())),
                 checkboxes_A:    $markers_to_checkboxes(wc.mk1),
                 checkboxes_B:    $markers_to_checkboxes(wc.mk2),
-                clc_metrics_A:   wc.clc_metrics_1,
-                clc_metrics_B:   wc.clc_metrics_2,
+                pointwise_A:     wc.pointwise_1,
+                pointwise_B:     wc.pointwise_2,
                 comment_A:       $yson_null,
                 comment_B:       $yson_null,
                 general_comment: COALESCE(Yson::LookupString(wc.meta_info, 'reasoning_reversed'), ''),
@@ -361,8 +361,8 @@ SELECT
         checkboxes_A: $markers_to_checkboxes(wc.mk1),
         checkboxes_B: $markers_to_checkboxes(wc.mk2),
 
-        clc_metrics_A: wc.clc_metrics_1,
-        clc_metrics_B: wc.clc_metrics_2,
+        pointwise_A: wc.pointwise_1,
+        pointwise_B: wc.pointwise_2,
 
         markers_A: wc.markers_1_list,
         markers_B: wc.markers_2_list,

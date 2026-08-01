@@ -15,6 +15,9 @@ PRAGMA yt.InferSchema = '2';
 --   прямой прогон:  model_1_evaluation -> answer_1, model_2_evaluation -> answer_2
 --   обратный:       model_1_evaluation -> answer_2, model_2_evaluation -> answer_1
 -- Маркеры первого этапа перестановке не подвергались: ext_markers_1 — всегда answer_1.
+--
+-- Выход 1 — рабочая таблица, к ней уже приклеены agg_tov_markup и raw_tov_markup.
+-- Выход 2 — те же две колонки отдельной таблицей под приёмник разметки.
 
 $yson_null = Just(Yson::From({}));
 $empty_list = ListCreate(String);
@@ -211,9 +214,9 @@ $markers_to_checkboxes = ($m) -> {
 -- и пара уезжает в weak, хотя проходы согласны.
 $norm = ($v) -> {
     RETURN CASE
-        WHEN $v IS NULL                                 THEN 'draw'
+        WHEN $v IS NULL                                    THEN 'draw'
         WHEN $v IN ('tie', 'both_bad', 'skip', 'draw', '') THEN 'draw'
-        WHEN $v IN ('model_1', 'model_2')               THEN $v
+        WHEN $v IN ('model_1', 'model_2')                  THEN $v
         ELSE 'draw'
     END;
 };
@@ -330,37 +333,27 @@ $winner_calc = (
     WITHOUT IF EXISTS p.tov_winner
 );
 
--- ========================= ВЫХОД 1: рабочая таблица =========================
-INSERT INTO {{output1}} WITH TRUNCATE
-SELECT
-    -- дополнительные колонки идут ДО wc.*: WITHOUT обязан быть последним в списке
-    $winner_source(wc.tov_winner, wc.answer_source_1, wc.answer_source_2) AS tov_winner_source,
-    IF(wc.model_winner_direct = wc.model_winner_reversed_normalized, 'strong', 'weak') AS tov_winner_strength,
-    wc.*,
-    WITHOUT IF EXISTS
-        wc.dst, wc.dst_2, wc.dst_yson_direct, wc.dst_yson_reversed,
-        wc.mk1, wc.mk2, wc.ext_markers_1, wc.ext_markers_2,
-        wc.infer_dialog, wc.tov_prompt,
-        wc.reasoning_dst, wc.reasoning_dst_2,
-        wc.model_winner_direct, wc.model_winner_reversed, wc.model_winner_reversed_normalized
-FROM $winner_calc AS wc;
+-- ========================= СБОРКА РАЗМЕТКИ =========================
+-- Обе структуры собраны именованными лямбдами над строкой целиком ($r = TableRow()),
+-- чтобы один и тот же код уехал и в рабочую таблицу, и в отдельный выход.
+-- Раньше они были расписаны инлайном в одном INSERT и переиспользовать их было нечем.
 
--- ========================= ВЫХОД 2: формат разметки =========================
--- raw_tov_markup — по одному raw_output на проход; проходы обязаны отличаться,
--- иначе агрегатор считает, что два «разметчика» дали идентичные оценки.
--- Маркеры первого этапа общие для обоих проходов: этап 1 прогонялся один раз.
-INSERT INTO {{output2}} WITH TRUNCATE
-SELECT
-    wc.instruct_id AS instruct_id,
+$agree = ($r) -> {
+    RETURN $r.model_winner_direct = $r.model_winner_reversed_normalized;
+};
 
-    Just(Yson::From(<|
-        task_id:    COALESCE(CAST(wc.instruct_id AS String), ''),
+-- raw_tov_markup — по одному raw_output на проход. Проходы обязаны отличаться:
+-- в оценках стоят цифры своего прохода, не усреднённые.
+-- Маркеры первого этапа общие для обоих: этап 1 прогонялся один раз.
+$raw_markup = ($r) -> {
+    RETURN Just(Yson::From(<|
+        task_id:    COALESCE(CAST($r.instruct_id AS String), ''),
         pool_id:    $yson_null,
         project_id: $yson_null,
-        answer_A:   COALESCE(CAST(wc.answer_1 AS String), ''),
-        answer_B:   COALESCE(CAST(wc.answer_2 AS String), ''),
-        source_A:   COALESCE(CAST(wc.answer_source_1 AS String), ''),
-        source_B:   COALESCE(CAST(wc.answer_source_2 AS String), ''),
+        answer_A:   COALESCE(CAST($r.answer_1 AS String), ''),
+        answer_B:   COALESCE(CAST($r.answer_2 AS String), ''),
+        source_A:   COALESCE(CAST($r.answer_source_1 AS String), ''),
+        source_B:   COALESCE(CAST($r.answer_source_2 AS String), ''),
         checkboxes: Just(Yson::From(<||>)),
         markers:    $empty_list,
 
@@ -370,98 +363,129 @@ SELECT
                 assignment_id:    $yson_null,
                 assignment_link:  $yson_null,
                 annotations:      $empty_list,
-                checkboxes_A:     $markers_to_checkboxes(wc.mk1),
-                checkboxes_B:     $markers_to_checkboxes(wc.mk2),
-                clc_metrics_A:    wc.clc_direct_1,
-                clc_metrics_B:    wc.clc_direct_2,
-                markers_A:        wc.markers_1_list,
-                markers_B:        wc.markers_2_list,
+                checkboxes_A:     $markers_to_checkboxes($r.mk1),
+                checkboxes_B:     $markers_to_checkboxes($r.mk2),
+                clc_metrics_A:    $r.clc_direct_1,
+                clc_metrics_B:    $r.clc_direct_2,
+                markers_A:        $r.markers_1_list,
+                markers_B:        $r.markers_2_list,
                 comment_A:        $yson_null,
                 comment_B:        $yson_null,
-                general_comment:  COALESCE(Yson::LookupString(wc.meta_info, 'reasoning_direct'), ''),
+                general_comment:  $sbs_why($r.dst_yson_direct),
                 comment_judge:    $yson_null,
                 diff_pa:          $yson_null,
-                diff_pa_winner:   $winner_source(wc.model_winner_direct, wc.answer_source_1, wc.answer_source_2),
+                diff_pa_winner:   $winner_source($r.model_winner_direct, $r.answer_source_1, $r.answer_source_2),
                 direct_speech_A:  $yson_null,
                 direct_speech_B:  $yson_null,
                 markup_dt:        $yson_null,
                 skip:             $yson_null,
-                winner:           $winner_source(wc.model_winner_direct, wc.answer_source_1, wc.answer_source_2)
+                winner:           $winner_source($r.model_winner_direct, $r.answer_source_1, $r.answer_source_2)
             |>,
             <|
                 worker_id:        'reverse',
                 assignment_id:    $yson_null,
                 assignment_link:  $yson_null,
                 annotations:      $empty_list,
-                checkboxes_A:     $markers_to_checkboxes(wc.mk1),
-                checkboxes_B:     $markers_to_checkboxes(wc.mk2),
+                checkboxes_A:     $markers_to_checkboxes($r.mk1),
+                checkboxes_B:     $markers_to_checkboxes($r.mk2),
                 -- в обратном прогоне ответы переставлены: A — это model_2_evaluation
-                clc_metrics_A:    wc.clc_reversed_1,
-                clc_metrics_B:    wc.clc_reversed_2,
-                markers_A:        wc.markers_1_list,
-                markers_B:        wc.markers_2_list,
+                clc_metrics_A:    $r.clc_reversed_1,
+                clc_metrics_B:    $r.clc_reversed_2,
+                markers_A:        $r.markers_1_list,
+                markers_B:        $r.markers_2_list,
                 comment_A:        $yson_null,
                 comment_B:        $yson_null,
-                general_comment:  COALESCE(Yson::LookupString(wc.meta_info, 'reasoning_reversed'), ''),
+                general_comment:  $sbs_why($r.dst_yson_reversed),
                 comment_judge:    $yson_null,
                 diff_pa:          $yson_null,
-                diff_pa_winner:   $winner_source(wc.model_winner_reversed_normalized, wc.answer_source_1, wc.answer_source_2),
+                diff_pa_winner:   $winner_source($r.model_winner_reversed_normalized, $r.answer_source_1, $r.answer_source_2),
                 direct_speech_A:  $yson_null,
                 direct_speech_B:  $yson_null,
                 markup_dt:        $yson_null,
                 skip:             $yson_null,
-                winner:           $winner_source(wc.model_winner_reversed_normalized, wc.answer_source_1, wc.answer_source_2)
+                winner:           $winner_source($r.model_winner_reversed_normalized, $r.answer_source_1, $r.answer_source_2)
             |>
         )
-    |>)) AS raw_tov_markup,
+    |>));
+};
 
-    Just(Yson::From(<|
-        task_id:    COALESCE(CAST(wc.instruct_id AS String), ''),
+-- agg_tov_markup — свёртка двух проходов: оценки усреднены, победитель уже сведён.
+$agg_markup = ($r) -> {
+    RETURN Just(Yson::From(<|
+        task_id:    COALESCE(CAST($r.instruct_id AS String), ''),
         pool_id:    $yson_null,
         project_id: $yson_null,
         worker_ids: AsList('direct', 'reverse'),
 
-        answer_A:   COALESCE(CAST(wc.answer_1 AS String), ''),
-        answer_B:   COALESCE(CAST(wc.answer_2 AS String), ''),
-        source_A:   COALESCE(CAST(wc.answer_source_1 AS String), ''),
-        source_B:   COALESCE(CAST(wc.answer_source_2 AS String), ''),
+        answer_A:   COALESCE(CAST($r.answer_1 AS String), ''),
+        answer_B:   COALESCE(CAST($r.answer_2 AS String), ''),
+        source_A:   COALESCE(CAST($r.answer_source_1 AS String), ''),
+        source_B:   COALESCE(CAST($r.answer_source_2 AS String), ''),
 
-        checkboxes_A: $markers_to_checkboxes(wc.mk1),
-        checkboxes_B: $markers_to_checkboxes(wc.mk2),
+        checkboxes_A: $markers_to_checkboxes($r.mk1),
+        checkboxes_B: $markers_to_checkboxes($r.mk2),
 
-        clc_metrics_A: wc.clc_metrics_1,
-        clc_metrics_B: wc.clc_metrics_2,
-        clc_detail_A:  wc.clc_detail_1,
-        clc_detail_B:  wc.clc_detail_2,
+        clc_metrics_A: $r.clc_metrics_1,
+        clc_metrics_B: $r.clc_metrics_2,
+        clc_detail_A:  $r.clc_detail_1,
+        clc_detail_B:  $r.clc_detail_2,
 
-        markers_A:       wc.markers_1_list,
-        markers_B:       wc.markers_2_list,
-        markers_notes_A: wc.markers_1_notes,
-        markers_notes_B: wc.markers_2_notes,
+        markers_A:       $r.markers_1_list,
+        markers_B:       $r.markers_2_list,
+        markers_notes_A: $r.markers_1_notes,
+        markers_notes_B: $r.markers_2_notes,
 
         annotations:      AsList($empty_list, $empty_list),
         comments_A:       AsList('', ''),
         comments_B:       AsList('', ''),
         general_comments: AsList(
-            COALESCE(Yson::LookupString(wc.meta_info, 'reasoning_direct'),   ''),
-            COALESCE(Yson::LookupString(wc.meta_info, 'reasoning_reversed'), '')
+            $sbs_why($r.dst_yson_direct),
+            $sbs_why($r.dst_yson_reversed)
         ),
 
         task_summarization: $yson_null,
 
         diff_pa:                  false,
-        diff_pa_winner:           $winner_source(wc.tov_winner, wc.answer_source_1, wc.answer_source_2),
-        diff_pa_winner_agreement: IF(wc.model_winner_direct = wc.model_winner_reversed_normalized, 1.0, 0.0),
-        diff_pa_winner_strength:  IF(wc.model_winner_direct = wc.model_winner_reversed_normalized, 'strong', 'weak'),
+        diff_pa_winner:           $winner_source($r.tov_winner, $r.answer_source_1, $r.answer_source_2),
+        diff_pa_winner_agreement: IF($agree($r), 1.0, 0.0),
+        diff_pa_winner_strength:  IF($agree($r), 'strong', 'weak'),
 
         direct_speech_A: false,
         direct_speech_B: false,
 
-        winner:            $winner_source(wc.tov_winner, wc.answer_source_1, wc.answer_source_2),
-        winner_agreement:  IF(wc.model_winner_direct = wc.model_winner_reversed_normalized, 1.0, 0.0),
-        winner_strength:   IF(wc.model_winner_direct = wc.model_winner_reversed_normalized, 'strong', 'weak'),
+        winner:            $winner_source($r.tov_winner, $r.answer_source_1, $r.answer_source_2),
+        winner_agreement:  IF($agree($r), 1.0, 0.0),
+        winner_strength:   IF($agree($r), 'strong', 'weak'),
 
         skip: false
-    |>)) AS agg_tov_markup
+    |>));
+};
 
+-- ========================= ВЫХОД 1: рабочая таблица + разметка =========================
+INSERT INTO {{output1}} WITH TRUNCATE
+SELECT
+    -- дополнительные колонки идут ДО wc.*: WITHOUT обязан быть последним в списке
+    $agg_markup(TableRow())                                               AS agg_tov_markup,
+    $raw_markup(TableRow())                                               AS raw_tov_markup,
+    $winner_source(wc.tov_winner, wc.answer_source_1, wc.answer_source_2) AS tov_winner_source,
+    IF($agree(TableRow()), 'strong', 'weak')                              AS tov_winner_strength,
+    wc.*,
+    WITHOUT IF EXISTS
+        wc.agg_tov_markup, wc.raw_tov_markup,
+        wc.dst, wc.dst_2, wc.dst_yson_direct, wc.dst_yson_reversed,
+        wc.mk1, wc.mk2, wc.ext_markers_1, wc.ext_markers_2,
+        wc.infer_dialog, wc.tov_prompt,
+        wc.reasoning_dst, wc.reasoning_dst_2,
+        wc.model_winner_direct, wc.model_winner_reversed, wc.model_winner_reversed_normalized
+FROM $winner_calc AS wc;
+
+-- ========================= ВЫХОД 2: только разметка =========================
+-- Та же пара колонок отдельной узкой таблицей — под приклейку к исходным задачам
+-- (см. sql/attach_tov_markup.sql). Если разметка нужна только в выходе 1,
+-- этот INSERT можно выкинуть целиком.
+INSERT INTO {{output2}} WITH TRUNCATE
+SELECT
+    wc.instruct_id          AS instruct_id,
+    $raw_markup(TableRow()) AS raw_tov_markup,
+    $agg_markup(TableRow()) AS agg_tov_markup
 FROM $winner_calc AS wc;

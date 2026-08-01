@@ -246,6 +246,15 @@ INSERT INTO {{output1}} WITH TRUNCATE
 SELECT
     -- дополнительные колонки идут ДО wc.*: WITHOUT обязан быть последним в списке
     $winner_source(wc.tov_winner, wc.answer_source_1, wc.answer_source_2) AS tov_winner_source,
+
+    -- Средний overall по каждому ответу отдельными колонками. В meta_info эти
+    -- числа уже есть, но там они лежат внутри Yson, а маршрутизация на третий
+    -- проход и метрики читают их с верхнего уровня.
+    ($aspect(wc.dst_yson_direct,   'model_1_evaluation', 'overall')
+     + $aspect(wc.dst_yson_reversed, 'model_2_evaluation', 'overall')) / 2.0 AS m1_overall_avg,
+    ($aspect(wc.dst_yson_direct,   'model_2_evaluation', 'overall')
+     + $aspect(wc.dst_yson_reversed, 'model_1_evaluation', 'overall')) / 2.0 AS m2_overall_avg,
+
     wc.*,
     WITHOUT IF EXISTS
         wc.dst, wc.dst_2, wc.dst_yson_direct, wc.dst_yson_reversed,

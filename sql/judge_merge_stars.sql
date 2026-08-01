@@ -226,13 +226,15 @@ $parsed = (
             $process_json(CAST(i2.dst AS UTF8?)) as dst_yson_reversed,
             i3.stars_yson                        as stars_yson,
             WITHOUT IF EXISTS i1.dst_yson_direct, i1.dst_yson_reversed, i1.stars_yson
+        -- Соединяются три таблицы, а в multi-way JOIN YQL требует ON:
+        -- USING разрешён только когда таблиц ровно две.
         FROM {{input1}} as i1
         INNER JOIN {{input2}} as i2
-        USING (instruct_id)
+        ON i1.instruct_id = i2.instruct_id
         -- LEFT, а не INNER: пара без звёзд должна доехать с пустым pointwise,
         -- а не исчезнуть из разметки молча.
-        -- USING здесь нельзя: у $stars ключ собран из Yson, тип может не совпасть
-        -- с типом instruct_id в первой таблице — сравниваем строками явно.
+        -- Ключ $stars собран из Yson, его тип может не совпасть с типом
+        -- instruct_id в первой таблице — сравниваем строками явно.
         LEFT JOIN $stars as i3
         ON CAST(i1.instruct_id AS String) = i3.instruct_id
     ) as d
@@ -255,6 +257,12 @@ $winner_calc = (
 
 $final_data = (
     SELECT
+        -- Те же колонки, что и во второй версии склейки: их читают маршрутизация
+        -- на третий проход и метрики. Звёзды здесь прогоняются один раз, без
+        -- перестановки, поэтому «среднее» — это просто выставленная оценка.
+        $score(wc.stars_yson, 'model_1_evaluation', 'overall') AS m1_overall_avg,
+        $score(wc.stars_yson, 'model_2_evaluation', 'overall') AS m2_overall_avg,
+
         wc.*,
         WITHOUT IF EXISTS
             wc.dst, wc.dst_yson, wc.dst_yson_direct, wc.dst_yson_reversed, wc.stars_yson,

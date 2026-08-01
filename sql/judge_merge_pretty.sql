@@ -5,14 +5,11 @@ PRAGMA yt.UseNativeYtTypes;
 PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '2';
 
--- Три входа, все джойнятся по instruct_id:
---   input1 — ВТОРОЙ этап прямого прогона (dst_2: звёзды + sbs_comparison)
---            плюс базовые поля пары: answer_1/2, answer_source_1/2, instruct_id
---   input2 — ВТОРОЙ этап обратного прогона (dst)
---   input3 — ПЕРВЫЙ этап: маркеры, колонки ext_markers_1 и ext_markers_2
---
--- Если обратный прогон тоже кладёт второй этап в dst_2 — поменяй i2.dst на i2.dst_2.
--- input3 подключён LEFT: пара без маркеров доедет с пустыми чекбоксами.
+-- input1 — прямой прогон, input2 — обратный.
+-- В обеих таблицах: dst  = выход ПЕРВОГО этапа (маркеры),
+--                   dst_2 = выход ВТОРОГО этапа (звёзды + sbs_comparison).
+-- Ниже сохранена твоя проводка: прямой берём из i1.dst_2, обратный из i2.dst.
+-- Если обратный прогон тоже кладёт второй этап в dst_2 — поменяй на i2.dst_2.
 --
 -- Соответствие ответов и ключей во втором этапе:
 --   прямой прогон:  model_1_evaluation -> answer_1, model_2_evaluation -> answer_2
@@ -297,9 +294,6 @@ $parsed = (
             reversed_m2_overall:              $score(dst_yson_reversed, 'model_1_evaluation', 'overall'),
             parse_ok_direct:                  dst_yson_direct IS NOT NULL,
             parse_ok_reversed:                dst_yson_reversed IS NOT NULL,
-            -- false = пара не нашлась в input3, чекбоксы пустые не потому,
-            -- что маркеров нет, а потому что их не с чем было сопоставить
-            markers_found:                    mk1 IS NOT NULL OR mk2 IS NOT NULL,
             process_url:                      'https://nirvana.yandex-team.ru/process/9113ab38-0999-4125-b182-523e63252411',
             graph_owner:                      'kristisha'
         |>))                                 AS meta_info,
@@ -327,17 +321,11 @@ $parsed = (
             $process_json(CAST(i2.dst   AS String)) AS dst_yson_reversed,
             -- маркеры первого этапа берём из прямой таблицы: там ext_markers_1
             -- относится к answer_1, ext_markers_2 — к answer_2, без перестановок
-            i3.ext_markers_1                        AS mk1,
-            i3.ext_markers_2                        AS mk2,
-            WITHOUT IF EXISTS
-                i1.dst_yson_direct, i1.dst_yson_reversed,
-                i1.mk1, i1.mk2, i1.ext_markers_1, i1.ext_markers_2
+            i1.ext_markers_1                        AS mk1,
+            i1.ext_markers_2                        AS mk2,
+            WITHOUT IF EXISTS i1.dst_yson_direct, i1.dst_yson_reversed, i1.mk1, i1.mk2
         FROM {{input1}} AS i1
         INNER JOIN {{input2}} AS i2
-        USING (instruct_id)
-        -- LEFT, а не INNER: пара без маркеров должна доехать с пустыми чекбоксами,
-        -- а не исчезнуть из разметки молча
-        LEFT JOIN {{input3}} AS i3
         USING (instruct_id)
     ) AS d
 );

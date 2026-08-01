@@ -9,15 +9,9 @@ PRAGMA yt.InferSchema = '2';
 -- победитель — в поле model_winner. Отличается от judge_merge_pretty.sql,
 -- где маркеры лежат словарём {имя: {is_present, explanation}}.
 --
--- Три входа, все джойнятся по instruct_id:
---   input1 — прямой прогон маркерного джаджа (dst) плюс база пары:
---            instruct_id, answer_1/2, answer_source_1/2
---   input2 — обратный прогон маркерного джаджа (dst)
---   input3 — звёзды: JSON с model_1_evaluation / model_2_evaluation в колонке dst
---
--- input3 подключён LEFT: пара без звёзд доедет с пустым pointwise, а не пропадёт.
--- Звёзды берутся одним прогоном, поэтому pointwise у обоих raw_outputs совпадает;
--- если прямой и обратный проходы звёзд лежат порознь — это четвёртый вход.
+-- pointwise_A / pointwise_B добавлены для совпадения схемы разметки с новой
+-- версией. Читаются из model_N_evaluation.<аспект>.score; если этот джадж
+-- звёзд не выставляет, поля останутся с null внутри, но сами поля будут на месте.
 
 $yson_null = Just(Yson::From({}));
 
@@ -96,14 +90,36 @@ $score_int = ($node, $model, $asp) -> {
     RETURN CAST(Math::Floor($score($node, $model, $asp)) AS Int64);
 };
 
--- Четыре звезды одного ответа. Звёзды приходят одним прогоном (input3),
--- усреднять нечего — поэтому одна функция и на raw_outputs, и на agg.
-$pointwise = ($node, $model) -> {
+-- Среднее двух проходов: если оценку поставил только один — берём его.
+$avg2 = ($a, $b) -> {
+    RETURN IF($a IS NULL OR $b IS NULL, COALESCE($a, $b), ($a + $b) / 2.0);
+};
+
+$score_final = ($dir, $rev, $md, $mr, $asp) -> {
+    RETURN CAST(Math::Floor($avg2(
+        $score($dir, $md, $asp),
+        $score($rev, $mr, $asp)
+    )) AS Int64);
+};
+
+-- Звёзды одного прохода — идут в raw_output этого прохода.
+$pointwise_pass = ($node, $model) -> {
     RETURN Just(Yson::From(ToDict(AsList(
         AsTuple("clarity",    $score_int($node, $model, 'clarity')),
         AsTuple("liveliness", $score_int($node, $model, 'liveliness')),
         AsTuple("connect",    $score_int($node, $model, 'connect')),
         AsTuple("overall",    $score_int($node, $model, 'overall'))
+    ))));
+};
+
+-- Звёзды, сведённые по двум проходам — идут в agg.
+-- $md — ключ этого ответа в прямом прогоне, $mr — в обратном.
+$pointwise = ($dir, $rev, $md, $mr) -> {
+    RETURN Just(Yson::From(ToDict(AsList(
+        AsTuple("clarity",    $score_final($dir, $rev, $md, $mr, 'clarity')),
+        AsTuple("liveliness", $score_final($dir, $rev, $md, $mr, 'liveliness')),
+        AsTuple("connect",    $score_final($dir, $rev, $md, $mr, 'connect')),
+        AsTuple("overall",    $score_final($dir, $rev, $md, $mr, 'overall'))
     ))));
 };
 
@@ -139,7 +155,6 @@ $parsed = (
                 model_winner_reversed_normalized: CASE WHEN Yson::LookupString(dst_yson_reversed, 'model_winner')??'draw' = 'model_1' THEN 'model_2' WHEN Yson::LookupString(dst_yson_reversed, 'model_winner')??'draw' = 'model_2' THEN 'model_1' ELSE 'draw' END,
                 reasoning_direct: Yson::LookupString(dst_yson_direct, 'reasoning')??'' ,
                 reasoning_reversed: Yson::LookupString(dst_yson_reversed, 'reasoning')??'',
-                stars_found: stars_yson IS NOT NULL,
                 process_url: 'https://nirvana.yandex-team.ru/process/3eef135a-2d28-4131-a06e-382307db3017',
                 graph_owner: 'lomalovo'
             |>
@@ -147,18 +162,9 @@ $parsed = (
         WITHOUT IF EXISTS d.meta_info
 
     FROM (
-        SELECT
-            i1.*,
-            $process_json(CAST(i1.dst AS UTF8?)) as dst_yson_direct,
-            $process_json(CAST(i2.dst AS UTF8?)) as dst_yson_reversed,
-            $process_json(CAST(i3.dst AS UTF8?)) as stars_yson,
-            WITHOUT IF EXISTS i1.dst_yson_direct, i1.dst_yson_reversed, i1.stars_yson
+        SELECT i1.*, $process_json(CAST(i1.dst AS UTF8?)) as dst_yson_direct, $process_json(CAST(i2.dst AS UTF8?)) as dst_yson_reversed
         FROM {{input1}} as i1
         INNER JOIN {{input2}} as i2
-        USING (instruct_id)
-        -- LEFT, а не INNER: пара без звёзд должна доехать с пустым pointwise,
-        -- а не исчезнуть из разметки молча
-        LEFT JOIN {{input3}} as i3
         USING (instruct_id)
     ) as d
 );
@@ -182,7 +188,7 @@ $final_data = (
     SELECT
         wc.*,
         WITHOUT IF EXISTS
-            wc.dst, wc.dst_yson, wc.dst_yson_direct, wc.dst_yson_reversed, wc.stars_yson,
+            wc.dst, wc.dst_yson, wc.dst_yson_direct, wc.dst_yson_reversed,
             wc.infer_dialog, wc.tov_prompt,
             wc.model_winner_direct, wc.model_winner_reversed, wc.model_winner_reversed_normalized
     FROM $winner_calc as wc
@@ -221,8 +227,8 @@ SELECT
                 AsTuple("annotations",      Just(Yson::From(AsList()))),
                 AsTuple("checkboxes_A",     $markers_to_checkboxes($get_markers(wc.dst_yson_direct.model_1_markers))),
                 AsTuple("checkboxes_B",     $markers_to_checkboxes($get_markers(wc.dst_yson_direct.model_2_markers))),
-                AsTuple("pointwise_A",      $pointwise(wc.stars_yson, 'model_1_evaluation')),
-                AsTuple("pointwise_B",      $pointwise(wc.stars_yson, 'model_2_evaluation')),
+                AsTuple("pointwise_A",      $pointwise_pass(wc.dst_yson_direct, 'model_1_evaluation')),
+                AsTuple("pointwise_B",      $pointwise_pass(wc.dst_yson_direct, 'model_2_evaluation')),
                 AsTuple("comment_A",        $yson_null),
                 AsTuple("comment_B",        $yson_null),
                 AsTuple("general_comment",  Just(Yson::From(COALESCE(Yson::LookupString(wc.meta_info, "reasoning_direct"), "")))),
@@ -243,10 +249,10 @@ SELECT
                 AsTuple("annotations",      Just(Yson::From(AsList()))),
                 AsTuple("checkboxes_A",     $markers_to_checkboxes($get_markers(wc.dst_yson_reversed.model_1_markers))),
                 AsTuple("checkboxes_B",     $markers_to_checkboxes($get_markers(wc.dst_yson_reversed.model_2_markers))),
-                -- звёзды прогонялись один раз, в прямой ориентации: перестановки
-                -- здесь нет, и цифры те же, что у worker'а direct
-                AsTuple("pointwise_A",      $pointwise(wc.stars_yson, 'model_1_evaluation')),
-                AsTuple("pointwise_B",      $pointwise(wc.stars_yson, 'model_2_evaluation')),
+                -- в обратном прогоне ответы переставлены: answer_A — это model_2.
+                -- Тот же порядок, что в сведении model_1_markers выше.
+                AsTuple("pointwise_A",      $pointwise_pass(wc.dst_yson_reversed, 'model_2_evaluation')),
+                AsTuple("pointwise_B",      $pointwise_pass(wc.dst_yson_reversed, 'model_1_evaluation')),
                 AsTuple("comment_A",        $yson_null),
                 AsTuple("comment_B",        $yson_null),
                 AsTuple("general_comment",  Just(Yson::From(COALESCE(Yson::LookupString(wc.meta_info, "reasoning_reversed"), "")))),
@@ -276,8 +282,8 @@ SELECT
         AsTuple("checkboxes_A",             $markers_to_checkboxes(wc.model_1_markers)),
         AsTuple("checkboxes_B",             $markers_to_checkboxes(wc.model_2_markers)),
 
-        AsTuple("pointwise_A",              $pointwise(wc.stars_yson, 'model_1_evaluation')),
-        AsTuple("pointwise_B",              $pointwise(wc.stars_yson, 'model_2_evaluation')),
+        AsTuple("pointwise_A",              $pointwise(wc.dst_yson_direct, wc.dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation')),
+        AsTuple("pointwise_B",              $pointwise(wc.dst_yson_direct, wc.dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation')),
 
         AsTuple("annotations",              Just(Yson::From(AsList(AsList(), AsList())))),
         AsTuple("comments_A",               Just(Yson::From(AsList("", "")))),

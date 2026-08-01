@@ -64,35 +64,41 @@ $aspect_why = ($node, $model, $asp) -> {
     ) ?? '';
 };
 
--- clc_metrics для одного ответа.
+-- Итоговая оценка аспекта: среднее двух проходов, округлённое ВНИЗ.
+-- 4 и 5 -> 4.5 -> 4. Именно это число мы и ставим.
+$final = ($dir, $rev, $md, $mr, $asp) -> {
+    RETURN CAST(Math::Floor(($aspect($dir, $md, $asp) + $aspect($rev, $mr, $asp)) / 2.0) AS Int64);
+};
+
+-- clc_metrics для одного ответа: четыре числа, ничего лишнего.
 -- $md — ключ этого ответа в прямом прогоне, $mr — в обратном (там ответы переставлены).
 $clc = ($dir, $rev, $md, $mr) -> {
     RETURN Just(Yson::From(<|
+        clarity:    $final($dir, $rev, $md, $mr, 'clarity'),
+        liveliness: $final($dir, $rev, $md, $mr, 'liveliness'),
+        connect:    $final($dir, $rev, $md, $mr, 'connect'),
+        overall:    $final($dir, $rev, $md, $mr, 'overall')
+    |>));
+};
+
+-- Подробности по проходам и обоснования — отдельной колонкой, чтобы не засорять clc_metrics.
+$clc_detail = ($dir, $rev, $md, $mr) -> {
+    RETURN Just(Yson::From(<|
         clarity: <|
-            direct:   $aspect($dir, $md, 'clarity'),
-            reversed: $aspect($rev, $mr, 'clarity'),
-            avg:     ($aspect($dir, $md, 'clarity') + $aspect($rev, $mr, 'clarity')) / 2.0
+            direct: $aspect($dir, $md, 'clarity'), reversed: $aspect($rev, $mr, 'clarity'),
+            reasoning: $aspect_why($dir, $md, 'clarity')
         |>,
         liveliness: <|
-            direct:   $aspect($dir, $md, 'liveliness'),
-            reversed: $aspect($rev, $mr, 'liveliness'),
-            avg:     ($aspect($dir, $md, 'liveliness') + $aspect($rev, $mr, 'liveliness')) / 2.0
+            direct: $aspect($dir, $md, 'liveliness'), reversed: $aspect($rev, $mr, 'liveliness'),
+            reasoning: $aspect_why($dir, $md, 'liveliness')
         |>,
         connect: <|
-            direct:   $aspect($dir, $md, 'connect'),
-            reversed: $aspect($rev, $mr, 'connect'),
-            avg:     ($aspect($dir, $md, 'connect') + $aspect($rev, $mr, 'connect')) / 2.0
+            direct: $aspect($dir, $md, 'connect'), reversed: $aspect($rev, $mr, 'connect'),
+            reasoning: $aspect_why($dir, $md, 'connect')
         |>,
         overall: <|
-            direct:   $aspect($dir, $md, 'overall'),
-            reversed: $aspect($rev, $mr, 'overall'),
-            avg:     ($aspect($dir, $md, 'overall') + $aspect($rev, $mr, 'overall')) / 2.0
-        |>,
-        reasoning: <|
-            clarity:    $aspect_why($dir, $md, 'clarity'),
-            liveliness: $aspect_why($dir, $md, 'liveliness'),
-            connect:    $aspect_why($dir, $md, 'connect'),
-            overall:    $aspect_why($dir, $md, 'overall')
+            direct: $aspect($dir, $md, 'overall'), reversed: $aspect($rev, $mr, 'overall'),
+            reasoning: $aspect_why($dir, $md, 'overall')
         |>
     |>));
 };
@@ -178,8 +184,10 @@ $parsed = (
         $flip($verdict(dst_yson_reversed))   AS model_winner_reversed_normalized,
 
         -- красивые метрики по каждому ответу
-        $clc(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS clc_metrics_1,
-        $clc(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation') AS clc_metrics_2,
+        $clc(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation')        AS clc_metrics_1,
+        $clc(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation')        AS clc_metrics_2,
+        $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS clc_detail_1,
+        $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation') AS clc_detail_2,
 
         -- маркеры: подробно, флагами и списком имён
         Just(Yson::From(mk1))                AS markers_1,

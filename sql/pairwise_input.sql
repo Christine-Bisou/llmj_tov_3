@@ -14,8 +14,9 @@ $template = cast(FileContent("prompt_pairwise.txt") as Utf8);
 -- порог разрыва: пары с |overall_1 - overall_2| <= $gap уходят на пересуд
 $gap = 1.0;
 
--- Всё берём из meta_info: колонок m1_overall_avg / tov_winner может не быть,
--- а meta_info пишется скриптом склейки всегда.
+-- Колонок m1_overall_avg / m2_overall_avg в этой таблице нет — они появляются
+-- только после скрипта склейки. Средние overall считаем из meta_info,
+-- вердикт берём из готовой колонки tov_winner.
 $num = ($mi, $key) -> {
     RETURN Yson::ConvertToDouble(Yson::Lookup($mi, $key)) ?? 0.0;
 };
@@ -26,18 +27,6 @@ $overall_1 = ($mi) -> {
 
 $overall_2 = ($mi) -> {
     RETURN ($num($mi, 'direct_m2_overall') + $num($mi, 'reversed_m2_overall')) / 2.0;
-};
-
--- та же логика, что и в скрипте склейки
-$verdict = ($mi) -> {
-    $d = Yson::LookupString($mi, 'model_winner_direct') ?? 'draw';
-    $r = Yson::LookupString($mi, 'model_winner_reversed_normalized') ?? 'draw';
-    RETURN CASE
-        WHEN $d = $r                      THEN $d
-        WHEN $d IN ('draw', 'tie')        THEN $r
-        WHEN $r IN ('draw', 'tie')        THEN $d
-        ELSE 'draw'
-    END;
 };
 
 $script = @@#py
@@ -207,7 +196,7 @@ SELECT
 
   $overall_1(res.meta_info) AS pair_overall_1,
   $overall_2(res.meta_info) AS pair_overall_2,
-  $verdict(res.meta_info)   AS pair_verdict_stage2,
+  CAST(res.tov_winner AS String) AS pair_verdict_stage2,
 
   res.* WITHOUT if exists res._other, res.infer_dialog, res.infer_dialog_rev
 FROM (
@@ -217,5 +206,5 @@ FROM (
     -- близкая пара: звёзды второго этапа почти не различают ответы
     ABS($overall_1(t.meta_info) - $overall_2(t.meta_info)) <= $gap
     -- ничьи не трогаем: внутри близких пар они дают 0.70, выше среднего
-    AND $verdict(t.meta_info) NOT IN ('draw', 'tie')
+    AND CAST(t.tov_winner AS String) NOT IN ('draw', 'tie')
 ) res;

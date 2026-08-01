@@ -13,6 +13,30 @@ PRAGMA yt.InferSchema = '2';
 
 $yson_null = Just(Yson::From({}));
 
+-- ========================= КЛЮЧ СКЛЕЙКИ =========================
+-- Единственное место, где задаётся, по чему соединяются прямой и обратный прогоны.
+--
+-- Вариант 1 (по умолчанию): в обеих таблицах есть instruct_id.
+$join_key = ($row) -> {
+    RETURN CAST($row.instruct_id AS String);
+};
+--
+-- Вариант 2: instruct_id в таблицах нет — запрос падает с
+--     Unknown column: instruct_id in correlation name: i1
+-- Тогда закомментировать вариант 1 и включить ключ по содержимому. answer_1 и
+-- answer_2 в обратном прогоне не переставлены (переставлен только infer_dialog),
+-- поэтому ключ с обеих сторон одинаковый. Уникальность проверить через
+-- sql/join_key_probe.sql: distinct_keys обязан совпасть с числом строк.
+--
+-- $join_key = ($row) -> {
+--     RETURN Digest::Md5Hex(COALESCE(CAST($row.answer_1 AS String), ''))
+--         || Digest::Md5Hex(COALESCE(CAST($row.answer_2 AS String), ''));
+-- };
+--
+-- Чего делать НЕЛЬЗЯ: соединять по ROW_NUMBER() OVER (). Порядок строк в YT
+-- после инференса не гарантирован — позиционный JOIN отработает без ошибки,
+-- но сложит прямой и обратный вердикты РАЗНЫХ пар.
+
 $script = @@#py
 import json
 import cyson
@@ -220,9 +244,17 @@ $parsed = (
             -- относится к answer_1, ext_markers_2 — к answer_2, без перестановок
             i1.ext_markers_1                        AS mk1,
             i1.ext_markers_2                        AS mk2
-        FROM {{input1}} AS i1
-        INNER JOIN {{input2}} AS i2
-        USING (instruct_id)
+        -- Из обратного прогона нужен ровно один столбец — dst. Тянуть i2.*
+        -- незачем: одноимённые колонки двух прогонов только мешают SimpleColumns.
+        FROM (
+            SELECT t.*, $join_key(TableRow()) AS join_key
+            FROM {{input1}} AS t
+        ) AS i1
+        INNER JOIN (
+            SELECT $join_key(TableRow()) AS join_key, t.dst AS dst
+            FROM {{input2}} AS t
+        ) AS i2
+        ON i1.join_key = i2.join_key
     ) AS d
 );
 
@@ -249,7 +281,7 @@ SELECT
     wc.*,
     WITHOUT IF EXISTS
         wc.dst, wc.dst_2, wc.dst_yson_direct, wc.dst_yson_reversed,
-        wc.mk1, wc.mk2,
+        wc.mk1, wc.mk2, wc.join_key,
         wc.infer_dialog, wc.tov_prompt,
         wc.reasoning_dst, wc.reasoning_dst_2,
         wc.model_winner_direct, wc.model_winner_reversed, wc.model_winner_reversed_normalized

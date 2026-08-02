@@ -119,6 +119,20 @@ $why = ($m, $name) -> {
     RETURN Yson::LookupString(Yson::Lookup($m, $name), 'explanation') ?? '';
 };
 
+-- Склейка проходов: маркер есть, если его поставил ХОТЯ БЫ ОДИН из проходов.
+-- Пояснение берём у того прохода, который маркер выставил (прямой в приоритете),
+-- вердикты обоих проходов оставляем рядом — по ним видно, где судьи разошлись.
+$merge_markers = ($a, $b) -> {
+    RETURN Just(Yson::From(ToDict(ListMap($marker_names, ($n) -> {
+        RETURN AsTuple($n, AsStruct(
+            ($is_on($a, $n) OR $is_on($b, $n))                                AS is_present,
+            (IF($is_on($b, $n) AND NOT $is_on($a, $n), $why($b, $n), $why($a, $n))) AS explanation,
+            $is_on($a, $n)                                                    AS direct,
+            $is_on($b, $n)                                                    AS reversed
+        ));
+    }))));
+};
+
 -- список имён сработавших маркеров — удобно глазами и для группировок
 $present = ($m) -> {
     RETURN ListFilter($marker_names, ($n) -> { RETURN $is_on($m, $n); });
@@ -189,9 +203,9 @@ $parsed = (
         $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS clc_detail_1,
         $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation') AS clc_detail_2,
 
-        -- маркеры: подробно, флагами и списком имён
-        Just(Yson::From(mk1))                AS markers_1,
-        Just(Yson::From(mk2))                AS markers_2,
+        -- маркеры: подробно, флагами и списком имён (уже склеенные по двум проходам)
+        mk1                                  AS markers_1,
+        mk2                                  AS markers_2,
         $flags(mk1)                          AS markers_1_flags,
         $flags(mk2)                          AS markers_2_flags,
         $present(mk1)                        AS markers_1_list,
@@ -216,10 +230,16 @@ $parsed = (
             i1.*,
             $process_json(CAST(i1.dst_2 AS String)) AS dst_yson_direct,
             $process_json(CAST(i2.dst   AS String)) AS dst_yson_reversed,
-            -- маркеры первого этапа берём из прямой таблицы: там ext_markers_1
-            -- относится к answer_1, ext_markers_2 — к answer_2, без перестановок
-            i1.ext_markers_1                        AS mk1,
-            i1.ext_markers_2                        AS mk2
+            -- Маркеры первого этапа есть в обеих таблицах. В прямом прогоне
+            -- ext_markers_1 относится к answer_1, ext_markers_2 — к answer_2;
+            -- в обратном ответы переставлены, поэтому индексы меняются местами.
+            i1.ext_markers_1                        AS mk1_direct,
+            i1.ext_markers_2                        AS mk2_direct,
+            i2.ext_markers_2                        AS mk1_reversed,
+            i2.ext_markers_1                        AS mk2_reversed,
+            -- итоговые маркеры ответа — объединение двух проходов по ИЛИ
+            $merge_markers(i1.ext_markers_1, i2.ext_markers_2) AS mk1,
+            $merge_markers(i1.ext_markers_2, i2.ext_markers_1) AS mk2
         FROM {{input1}} AS i1
         INNER JOIN {{input2}} AS i2
         USING (instruct_id)
@@ -250,6 +270,7 @@ SELECT
     WITHOUT IF EXISTS
         wc.dst, wc.dst_2, wc.dst_yson_direct, wc.dst_yson_reversed,
         wc.mk1, wc.mk2,
+        wc.mk1_direct, wc.mk2_direct, wc.mk1_reversed, wc.mk2_reversed,
         wc.infer_dialog, wc.tov_prompt,
         wc.reasoning_dst, wc.reasoning_dst_2,
         wc.model_winner_direct, wc.model_winner_reversed, wc.model_winner_reversed_normalized
@@ -276,8 +297,8 @@ SELECT
                 worker_id:       'direct',
                 assignment_id:   $yson_null,
                 annotations:     Just(Yson::From(AsList())),
-                checkboxes_A:    $markers_to_checkboxes(wc.mk1),
-                checkboxes_B:    $markers_to_checkboxes(wc.mk2),
+                checkboxes_A:    $markers_to_checkboxes(wc.mk1_direct),
+                checkboxes_B:    $markers_to_checkboxes(wc.mk2_direct),
                 clc_metrics_A:   wc.clc_metrics_1,
                 clc_metrics_B:   wc.clc_metrics_2,
                 comment_A:       $yson_null,
@@ -296,8 +317,8 @@ SELECT
                 worker_id:       'reverse',
                 assignment_id:   $yson_null,
                 annotations:     Just(Yson::From(AsList())),
-                checkboxes_A:    $markers_to_checkboxes(wc.mk1),
-                checkboxes_B:    $markers_to_checkboxes(wc.mk2),
+                checkboxes_A:    $markers_to_checkboxes(wc.mk1_reversed),
+                checkboxes_B:    $markers_to_checkboxes(wc.mk2_reversed),
                 clc_metrics_A:   wc.clc_metrics_1,
                 clc_metrics_B:   wc.clc_metrics_2,
                 comment_A:       $yson_null,

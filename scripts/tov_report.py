@@ -29,8 +29,19 @@ NEGATIVE_MARKERS = ['critical_tone', 'bad_intro', 'bad_proactivity', 'over_emoti
                     'language_errors', 'inconsistency']
 MARKER_NAMES = POSITIVE_MARKERS + NEGATIVE_MARKERS
 
+# Аспекты второго этапа (звёзды).
+ASPECTS = ['clarity', 'connect', 'liveliness', 'overall']
+ASPECT_RU = {'clarity': 'Ясность', 'connect': 'Попадание в собеседника',
+             'liveliness': 'Живость', 'overall': 'Общая оценка'}
+
 # Ключи внутри маркера, которые хранят вердикт отдельного прохода.
 PASS_KEYS = ('is_present', 'direct', 'reversed')
+
+
+def _norm_verdict(val):
+    """'tie' и пустое значение — та же ничья, что и 'draw'."""
+    val = str(val).strip()
+    return 'draw' if val in ('tie', 'both_bad', 'skip', '') else val
 
 
 def _as_bool(val):
@@ -96,7 +107,11 @@ def marker_flags(row, idx):
 
 
 def _yson_str(node, key):
-    """Значение строкового поля: и для распарсенного словаря, и для YSON-строки."""
+    """Значение строкового поля: и для распарсенного словаря, и для YSON-строки.
+
+    В YSON голые слова пишутся без кавычек (`"model_winner_direct"=tie;`),
+    поэтому берём оба варианта записи значения.
+    """
     if isinstance(node, dict):
         val = node.get(key, '')
         if isinstance(val, bytes):
@@ -107,8 +122,10 @@ def _yson_str(node, key):
     if isinstance(node, str):
         import re
 
-        m = re.search(r'"?%s"?="([^"]*)"' % re.escape(key), node)
-        return m.group(1).strip() if m else ''
+        m = re.search(r'"?%s"?=(?:"([^"]*)"|([A-Za-z_0-9.\-]+))' % re.escape(key), node)
+        if not m:
+            return ''
+        return (m.group(1) if m.group(1) is not None else m.group(2)).strip()
     return ''
 
 
@@ -151,6 +168,96 @@ def marker_stats(flags_1, flags_2):
             'p_value': p_val,
         }
     return stats
+
+
+def _aspect_scores(node):
+    """Оценки по аспектам из pointwise_N: и словарь, и YSON-строка."""
+    out = {}
+    if isinstance(node, dict):
+        for asp in ASPECTS:
+            val = node.get(asp)
+            if isinstance(val, dict):  # {score: 4, reasoning: ...}
+                val = val.get('score')
+            try:
+                out[asp] = float(val)
+            except (TypeError, ValueError):
+                pass
+        return out
+    if isinstance(node, bytes):
+        node = node.decode('utf-8', errors='ignore')
+    if isinstance(node, str):
+        import re
+
+        for asp, val in re.findall(r'"?(%s)"?=(-?\d+(?:\.\d+)?)' % '|'.join(ASPECTS), node):
+            out[asp] = float(val)
+    return out
+
+
+def pointwise_stats(records):
+    """По каждому аспекту: средние обеих моделей, разбивка побед и p-value."""
+    stats = {}
+    for asp in ASPECTS:
+        pairs = []
+        for row in records:
+            a = _aspect_scores(row.get('pointwise_1', {})).get(asp)
+            b = _aspect_scores(row.get('pointwise_2', {})).get(asp)
+            if a is not None and b is not None:
+                pairs.append((a, b))
+        if not pairs:
+            continue
+        a = np.array([x for x, _ in pairs])
+        b = np.array([y for _, y in pairs])
+        diff = a - b
+        p_val = 1.0
+        if len(diff) >= 2 and diff.std(ddof=1) > 0:
+            p_val = float(ttest_1samp(diff, 0.0).pvalue)
+        if math.isnan(p_val):
+            p_val = 1.0
+        stats[asp] = {
+            'cnt': len(pairs),
+            'm1_mean': float(a.mean()), 'm2_mean': float(b.mean()),
+            'delta': float(b.mean() - a.mean()),
+            'm1_better': float((diff > 0).mean()),
+            'tie': float((diff == 0).mean()),
+            'm2_better': float((diff < 0).mean()),
+            'm1_top': float((a == 5).mean()), 'm2_top': float((b == 5).mean()),
+            'm1_low': float((a <= 3).mean()), 'm2_low': float((b <= 3).mean()),
+            'p_value': p_val,
+        }
+    return stats
+
+
+def pass_stats(records):
+    """Вердикты отдельных проходов и позиционная предвзятость судьи."""
+    direct, rev_raw, rev_norm = [], [], []
+    for row in records:
+        meta = row.get('meta_info', {})
+        direct.append(_norm_verdict(_yson_str(meta, 'model_winner_direct')))
+        rev_raw.append(_norm_verdict(_yson_str(meta, 'model_winner_reversed')))
+        rev_norm.append(_norm_verdict(_yson_str(meta, 'model_winner_reversed_normalized')))
+
+    total = len(direct)
+    if total == 0:
+        return {}
+
+    def side(winners):
+        wr1, wr2, draw_rate, p_val = winrate_stats(winners)
+        return {'winrate_m1': wr1, 'winrate_m2': wr2, 'draw_rate': draw_rate, 'p_value': p_val,
+                'wins_m1': winners.count('model_1'), 'wins_m2': winners.count('model_2'),
+                'draws': winners.count('draw')}
+
+    # первым судье показан answer_1 в прямом проходе и answer_2 в обратном
+    first = direct.count('model_1') + rev_raw.count('model_1')
+    second = direct.count('model_2') + rev_raw.count('model_2')
+    shown = 2 * total
+    return {
+        'direct': side(direct),
+        'reversed': side(rev_norm),
+        'agreement': sum(a == b for a, b in zip(direct, rev_norm)) / total,
+        'first_position': first / shown,
+        'second_position': second / shown,
+        'position_draw': (shown - first - second) / shown,
+    }
 
 
 def _colorize(value, is_winner, p_val):
@@ -204,8 +311,8 @@ def build_report(records, m1_name, m2_name, basket_path='Неизвестный 
         winners.append(str(row.get('tov_winner', 'draw')).strip())
 
         meta = row.get('meta_info', {})
-        direct = _yson_str(meta, 'model_winner_direct')
-        reversed_norm = _yson_str(meta, 'model_winner_reversed_normalized')
+        direct = _norm_verdict(_yson_str(meta, 'model_winner_direct'))
+        reversed_norm = _norm_verdict(_yson_str(meta, 'model_winner_reversed_normalized'))
         if direct == reversed_norm:
             confidences.append('confident')
         elif direct in ('draw', 'tie') or reversed_norm in ('draw', 'tie'):
@@ -218,6 +325,8 @@ def build_report(records, m1_name, m2_name, basket_path='Неизвестный 
 
     winrate_m1, winrate_m2, draw_rate, p_value = winrate_stats(winners)
     stats = marker_stats(flags_1, flags_2)
+    aspects = pointwise_stats(records)
+    passes = pass_stats(records)
 
     m1_color = _colorize(winrate_m1, winrate_m1 > winrate_m2, p_value)
     m2_color = _colorize(winrate_m2, winrate_m2 > winrate_m1, p_value)
@@ -247,6 +356,35 @@ def build_report(records, m1_name, m2_name, basket_path='Неизвестный 
 {_marker_table(stats, NEGATIVE_MARKERS, False, m1_name, m2_name)}"""
     report_text += _cut('Маркеры ToV', marker_details)
 
+    if aspects:
+        lines = [f"| Аспект | {m1_name} | {m2_name} | Δ | {m1_name} выше | Поровну | {m2_name} выше | p-value |",
+                 "|---|---|---|---|---|---|---|---|"]
+        for asp in ASPECTS:
+            s = aspects.get(asp)
+            if not s:
+                continue
+            delta = f"{s['delta']:+.2f}".replace('+0.00', '0.00')
+            lines.append(
+                f"| {ASPECT_RU[asp]} | {s['m1_mean']:.2f} | {s['m2_mean']:.2f} | {delta} | "
+                f"{s['m1_better'] * 100:.1f}% | {s['tie'] * 100:.1f}% | {s['m2_better'] * 100:.1f}% | "
+                f"`{s['p_value']:.4f}` |")
+        aspect_details = ("Средний балл по пятибалльной шкале, склеенный из двух проходов.\n\n"
+                          + "\n".join(lines) + "\n")
+        report_text += _cut('Оценки по аспектам (pointwise)', aspect_details)
+
+    if passes:
+        d, r = passes['direct'], passes['reversed']
+        pass_details = f"""
+| Проход | {m1_name} | {m2_name} | Ничьи | p-value |
+|---|---|---|---|---|
+| Прямой | {d['winrate_m1'] * 100:.1f}% ({d['wins_m1']}) | {d['winrate_m2'] * 100:.1f}% ({d['wins_m2']}) | {d['draws']} | `{d['p_value']:.4f}` |
+| Обратный | {r['winrate_m1'] * 100:.1f}% ({r['wins_m1']}) | {r['winrate_m2'] * 100:.1f}% ({r['wins_m2']}) | {r['draws']} | `{r['p_value']:.4f}` |
+
+* **Согласие проходов:** {passes['agreement'] * 100:.1f}%
+* **Позиционная предвзятость:** первый показанный ответ побеждает в {passes['first_position'] * 100:.1f}% сравнений, второй — в {passes['second_position'] * 100:.1f}%, ничьи {passes['position_draw'] * 100:.1f}%
+"""
+        report_text += _cut('Проходы судьи (pairwise)', pass_details)
+
     conf_cnt = confidences.count('confident')
     soft_cnt = confidences.count('soft')
     conflict_cnt = confidences.count('conflict')
@@ -273,6 +411,8 @@ def build_report(records, m1_name, m2_name, basket_path='Неизвестный 
         'soft_cnt': soft_cnt,
         'conflict_cnt': conflict_cnt,
         'markers': stats,
+        'aspects': aspects,
+        'passes': passes,
         'm1_markers_perc': {k: v['m1_perc'] for k, v in stats.items()},
         'm2_markers_perc': {k: v['m2_perc'] for k, v in stats.items()},
     }
@@ -325,6 +465,14 @@ def _cli(path):
     m2_name = str(df['answer_source_2'].iloc[0]) if 'answer_source_2' in df else 'model_2'
     report_text, metrics = build_report(df.to_dict('records'), m1_name, m2_name, basket_path=path)
     print(report_text)
+    if metrics.get('aspects'):
+        print(pd.DataFrame([
+            {'аспект': ASPECT_RU[a], f'{m1_name}': round(s['m1_mean'], 2),
+             f'{m2_name}': round(s['m2_mean'], 2), 'Δ': round(s['delta'], 3),
+             '1 выше %': round(s['m1_better'] * 100, 1), 'поровну %': round(s['tie'] * 100, 1),
+             '2 выше %': round(s['m2_better'] * 100, 1), 'p_value': round(s['p_value'], 6)}
+            for a, s in metrics['aspects'].items()]).to_string(index=False))
+        print()
     rows = [{'marker': name,
              f'{m1_name} %': round(s['m1_perc'] * 100, 1), f'{m1_name} n': s['m1_cnt'],
              f'{m2_name} %': round(s['m2_perc'] * 100, 1), f'{m2_name} n': s['m2_cnt'],

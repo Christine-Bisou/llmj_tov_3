@@ -7,14 +7,20 @@ PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 DECLARE $input1 AS String;
 DECLARE $output1 AS String;
 
--- Копируем таблицу как есть и добавляем сквозной instruct_id = 1..n.
--- TableRecordIndex() — это номер строки внутри таблицы (с 1), считается
--- на лету при чтении, без сортировки и без свода всех данных в одну джобу.
--- Работает корректно, пока $input1 — одна статическая таблица:
--- при чтении нескольких таблиц (диапазон, конкатенация) нумерация
--- начинается заново на каждой из них.
+-- Копируем таблицу как есть и добавляем instruct_id = 1..n.
+-- Номер не привязан к порядку строк во входе: строки перемешиваются
+-- случайным ключом, и уже по нему раздаются номера.
+-- RandomNumber(TableRow()) — аргумент нужен, чтобы YQL не свернул вызов
+-- в одну константу на всю таблицу.
+$src = (
+    SELECT
+        t.*,
+        RandomNumber(TableRow()) AS _rnd
+    FROM $input1 AS t
+);
+
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
-    TableRecordIndex() AS instruct_id,
-    t.*
-FROM $input1 AS t;
+    ROW_NUMBER() OVER (ORDER BY _rnd) AS instruct_id,
+    s.* WITHOUT if exists s._rnd
+FROM $src AS s;

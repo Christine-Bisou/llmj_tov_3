@@ -18,12 +18,25 @@ $norm = ($v) -> {
     END;
 };
 
-$base = (
+-- meta_info нет в выведенной схеме (InferSchema='1' смотрит только первую строку),
+-- поэтому колонка лежит в _other. WeakField достаёт её оттуда: сначала ищет
+-- в строгой части схемы, потом в _other — работает в обоих случаях.
+$raw = (
     SELECT
         d.*,
-        $norm(Yson::LookupString(d.meta_info, 'model_winner_direct'))              AS v_direct,
-        $norm(Yson::LookupString(d.meta_info, 'model_winner_reversed_normalized')) AS v_rev
+        Yson::LookupString(WeakField(d.meta_info, Yson), 'model_winner_direct')
+            AS v_direct_raw,
+        Yson::LookupString(WeakField(d.meta_info, Yson), 'model_winner_reversed_normalized')
+            AS v_rev_raw
     FROM $input1 AS d
+);
+
+$base = (
+    SELECT
+        r.*,
+        $norm(r.v_direct_raw) AS v_direct,
+        $norm(r.v_rev_raw)    AS v_rev
+    FROM $raw AS r
 );
 
 $parsed = (
@@ -66,5 +79,7 @@ SELECT
     1.0 * SUM(
         IF(tov_random = winner_bb_equal_to_draw, 1.0,
            IF(tov_random = 'draw' OR winner_bb_equal_to_draw = 'draw', 0.5, 0.0))
-    ) / COUNT(*)                                            AS acc_draw_05
+    ) / COUNT(*)                                            AS acc_draw_05,
+    -- контроль: если meta_info не достался, здесь будет cnt, а не 0
+    COUNT_IF(v_direct_raw IS NULL AND v_rev_raw IS NULL)    AS rows_without_meta
 FROM $parsed;

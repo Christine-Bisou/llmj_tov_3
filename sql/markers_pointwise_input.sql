@@ -14,7 +14,7 @@ DECLARE $output2 AS String;
 -- Вход прежний, один ($input1: одна строка = пара), выходов два:
 --   $output1 — infer_dialog собран по answer_1,
 --   $output2 — infer_dialog собран по answer_2.
--- Каждый уходит в свой узел инфера, дальше markers_pointwise_collapse.sql
+-- Каждый уходит в свой узел инфера, дальше markers_stars_pointwise_parse.sql
 -- джойнит их обратно по instruct_id в ext_markers_1 / ext_markers_2.
 --
 -- Строки в обеих таблицах — один к одному по instruct_id, набор колонок тоже

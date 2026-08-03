@@ -15,7 +15,7 @@ DECLARE $output1 AS String;
 -- прогон по answer_1 (answer_slot = 1) и по answer_2 (answer_slot = 2)
 -- друг под другом. Половины различаем по answer_slot, порядок строк не важен.
 -- Если после инфера это две отдельные таблицы, слей их перед этим узлом
--- (Concat / merge) — либо скажи, и я добавлю сюда второй DECLARE $input2.
+-- (Concat / merge) — либо заведи второй вход и допиши UNION ALL по нему.
 -- В каждой таблице свой dst: {analysis, linguistic_scan, markers, evaluation}.
 -- На выходе одна строка на instruct_id: маркеры и звёзды обоих ответов рядом,
 -- остальные колонки (golden_*, worker_*, chief_*) едут из первой таблицы как есть.

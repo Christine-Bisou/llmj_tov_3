@@ -1,6 +1,5 @@
-DECLARE $input1 AS String;
-DECLARE $input2 AS String;
-DECLARE $output1 AS String;
+DECLARE $tables_list AS List<String>;
+DECLARE $out_table AS String;
 
 PRAGMA Yson.AutoConvert;
 PRAGMA yson.DisableStrict;
@@ -10,7 +9,9 @@ PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '2';
 
 -- Объединение двух прокачек поинтвайзного промта.
--- $input1 — прогон по answer_1 (answer_slot = 1), $input2 — по answer_2.
+-- На вход заводятся обе таблицы после инфера: прогон по answer_1
+-- (answer_slot = 1) и по answer_2 (answer_slot = 2). Половины различаем по
+-- answer_slot, а не по порядку таблиц в списке.
 -- В каждой таблице свой dst: {analysis, linguistic_scan, markers, evaluation}.
 -- На выходе одна строка на instruct_id: маркеры и звёзды обоих ответов рядом,
 -- остальные колонки (golden_*, worker_*, chief_*) едут из первой таблицы как есть.
@@ -113,23 +114,27 @@ $score = ($node, $asp) -> {
 };
 
 -- Парсим по одному разу на строку: $parse_dst — питон, дёргать его в каждой
--- проекции дорого. answer_slot проверяем явно: если узлы графа перепутают
--- местами, лучше получить пустой выход, чем зеркальную разметку.
-$slot_1 = (
+-- проекции дорого.
+$parsed = (
     SELECT t.*, $parse_dst(CAST(t.dst AS String)) AS node
-    FROM $input1 AS t
-    WHERE t.answer_slot == 1
+    FROM Each($tables_list) AS t
+);
+
+$slot_1 = (
+    SELECT p.*
+    FROM $parsed AS p
+    WHERE p.answer_slot == 1
 );
 
 $slot_2 = (
     SELECT
-        t.instruct_id                          AS instruct_id,
-        $parse_dst(CAST(t.dst AS String))      AS node
-    FROM $input2 AS t
-    WHERE t.answer_slot == 2
+        p.instruct_id AS instruct_id,
+        p.node        AS node
+    FROM $parsed AS p
+    WHERE p.answer_slot == 2
 );
 
-INSERT INTO $output1 WITH TRUNCATE
+INSERT INTO $out_table WITH TRUNCATE
 SELECT
     -- маркеры
     Yson::Lookup(a.node, 'markers')          AS markers_1_answer,

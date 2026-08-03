@@ -49,9 +49,10 @@ def process_json(s):
 
 $process_json = Python3::process_json($script);
 
--- В поинтвайзном промте три ключа верхнего уровня: analysis, scan, markers.
+-- В поинтвайзном промте три ключа верхнего уровня:
+-- analysis, linguistic_scan, markers.
 $markers  = ($node) -> { RETURN Yson::Lookup($node, 'markers'); };
-$scan     = ($node) -> { RETURN Yson::Lookup($node, 'scan'); };
+$scan     = ($node) -> { RETURN Yson::LookupString($node, 'linguistic_scan') ?? ''; };
 $analysis = ($node) -> { RETURN Yson::LookupString($node, 'analysis') ?? ''; };
 
 $parsed = (
@@ -65,7 +66,7 @@ $parsed = (
 $slot_1 = (
     SELECT
         $markers(p.dst_yson)  AS ext_markers_1,
-        $scan(p.dst_yson)     AS ext_scan_1,
+        $scan(p.dst_yson)     AS ext_linguistic_scan_1,
         $analysis(p.dst_yson) AS ext_analysis_1,
         p.dst_yson IS NOT NULL AS markers_parsed_1,
         p.* WITHOUT IF EXISTS
@@ -80,7 +81,7 @@ $slot_2 = (
     SELECT
         p.instruct_id         AS instruct_id,
         $markers(p.dst_yson)  AS ext_markers_2,
-        $scan(p.dst_yson)     AS ext_scan_2,
+        $scan(p.dst_yson)     AS ext_linguistic_scan_2,
         $analysis(p.dst_yson) AS ext_analysis_2,
         p.dst_yson IS NOT NULL AS markers_parsed_2
     FROM $parsed AS p
@@ -92,9 +93,9 @@ $slot_2 = (
 -- это видно по счётчику, а не тихо превращается в «все маркеры false».
 INSERT INTO {{output1}} WITH TRUNCATE
 SELECT
-    s2.ext_markers_2    AS ext_markers_2,
-    s2.ext_scan_2       AS ext_scan_2,
-    s2.ext_analysis_2   AS ext_analysis_2,
+    s2.ext_markers_2          AS ext_markers_2,
+    s2.ext_linguistic_scan_2  AS ext_linguistic_scan_2,
+    s2.ext_analysis_2         AS ext_analysis_2,
     s1.markers_parsed_1 AND s2.markers_parsed_2 AS markers_parsed_ok,
     s1.* WITHOUT s1.markers_parsed_1
 FROM $slot_1 AS s1

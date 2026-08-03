@@ -6,8 +6,8 @@ PRAGMA yt.UseNativeYtTypes;
 PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '1';
 
-DECLARE $tables_list AS List<String>;
-DECLARE $out_table AS String;
+DECLARE $input1 AS String;
+DECLARE $output1 AS String;
 
 -- Сборка входа для второго этапа (v4: аудит черновика + SbS вердикт).
 -- На входе — выход markers_stars_pointwise_parse.sql: там уже лежат
@@ -204,7 +204,7 @@ $build_judge_input = Python3::build_judge_input($script);
 -- на позицию 2 — answer_1 со своими. Перепутать половины нельзя: джадж будет
 -- сверять цитаты по чужому тексту, не найдёт их и снесёт всю разметку как
 -- «маркер без цитаты» — это будет выглядеть не сбоем, а работой аудита.
-INSERT INTO $out_table WITH TRUNCATE
+INSERT INTO $output1 WITH TRUNCATE
 SELECT
   Yson::ParseJson(
     $build_judge_input(
@@ -223,4 +223,4 @@ SELECT
 
   -- WITHOUT обязан быть последним элементом списка
   t.* WITHOUT IF EXISTS t.tov_prompt, t._other, t.infer_dialog, t.dst, t.reasoning_dst
-FROM Each($tables_list) AS t;
+FROM $input1 AS t;

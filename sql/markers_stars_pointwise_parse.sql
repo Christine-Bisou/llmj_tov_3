@@ -1,17 +1,21 @@
-DECLARE $tables_list AS List<String>;
-DECLARE $out_table AS String;
-
 PRAGMA Yson.AutoConvert;
 PRAGMA yson.DisableStrict;
 PRAGMA SimpleColumns;
+PRAGMA AnsiOptionalAs;
 PRAGMA yt.UseNativeYtTypes;
 PRAGMA AnsiInForEmptyOrNullableItemsCollections;
-PRAGMA yt.InferSchema = '2';
+PRAGMA yt.InferSchema = '1';
+
+DECLARE $input1 AS String;
+DECLARE $output1 AS String;
 
 -- Объединение двух прокачек поинтвайзного промта.
--- На вход заводятся обе таблицы после инфера: прогон по answer_1
--- (answer_slot = 1) и по answer_2 (answer_slot = 2). Половины различаем по
--- answer_slot, а не по порядку таблиц в списке.
+--
+-- ВАЖНО ПРО ВХОД: обе прокачки должны лежать в ОДНОЙ входной таблице —
+-- прогон по answer_1 (answer_slot = 1) и по answer_2 (answer_slot = 2)
+-- друг под другом. Половины различаем по answer_slot, порядок строк не важен.
+-- Если после инфера это две отдельные таблицы, слей их перед этим узлом
+-- (Concat / merge) — либо скажи, и я добавлю сюда второй DECLARE $input2.
 -- В каждой таблице свой dst: {analysis, linguistic_scan, markers, evaluation}.
 -- На выходе одна строка на instruct_id: маркеры и звёзды обоих ответов рядом,
 -- остальные колонки (golden_*, worker_*, chief_*) едут из первой таблицы как есть.
@@ -117,7 +121,7 @@ $score = ($node, $asp) -> {
 -- проекции дорого.
 $parsed = (
     SELECT t.*, $parse_dst(CAST(t.dst AS String)) AS node
-    FROM Each($tables_list) AS t
+    FROM $input1 AS t
 );
 
 $slot_1 = (
@@ -134,7 +138,7 @@ $slot_2 = (
     WHERE p.answer_slot == 2
 );
 
-INSERT INTO $out_table WITH TRUNCATE
+INSERT INTO $output1 WITH TRUNCATE
 SELECT
     -- маркеры
     Yson::Lookup(a.node, 'markers')          AS markers_1_answer,

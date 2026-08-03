@@ -6,12 +6,12 @@ PRAGMA yt.UseNativeYtTypes;
 PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '1';
 
-DECLARE $tables_list AS List<String>;
+DECLARE $input1 AS String;
 DECLARE $output1 AS String;
 DECLARE $output2 AS String;
 
 -- Поинтвайзный первый этап: в промт уходит РОВНО ОДИН ответ.
--- Вход прежний (одна строка = пара), выходов два:
+-- Вход прежний, один ($input1: одна строка = пара), выходов два:
 --   $output1 — infer_dialog собран по answer_1,
 --   $output2 — infer_dialog собран по answer_2.
 -- Каждый уходит в свой узел инфера, дальше markers_pointwise_collapse.sql
@@ -188,7 +188,7 @@ SELECT
 
   -- WITHOUT обязан быть последним элементом списка, иначе YQL ругается
   t.* WITHOUT IF EXISTS t.answer_slot, t.tov_prompt, t._other, t.infer_dialog
-FROM Each($tables_list) AS t;
+FROM $input1 AS t;
 
 -- ===================== ВЫХОД 2: второй ответ пары =====================
 INSERT INTO $output2 WITH TRUNCATE
@@ -203,4 +203,4 @@ SELECT
   ) AS infer_dialog,
 
   t.* WITHOUT IF EXISTS t.answer_slot, t.tov_prompt, t._other, t.infer_dialog
-FROM Each($tables_list) AS t;
+FROM $input1 AS t;

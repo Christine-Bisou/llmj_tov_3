@@ -18,17 +18,11 @@ $norm = ($v) -> {
     END;
 };
 
--- meta_info нет в выведенной схеме (InferSchema='1' смотрит только первую строку),
--- поэтому колонка лежит внутри _other
-$mi = ($other, $key) -> {
-    RETURN Yson::LookupString(Yson::Lookup($other, 'meta_info'), $key);
-};
-
 $base = (
     SELECT
         d.*,
-        $norm($mi(d._other, 'model_winner_direct'))              AS v_direct,
-        $norm($mi(d._other, 'model_winner_reversed_normalized')) AS v_rev
+        $norm(Yson::LookupString(d.meta_info, 'model_winner_direct'))              AS v_direct,
+        $norm(Yson::LookupString(d.meta_info, 'model_winner_reversed_normalized')) AS v_rev
     FROM $input1 AS d
 );
 

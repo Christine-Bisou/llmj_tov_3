@@ -7,7 +7,12 @@ PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '1';
 
 DECLARE $tables_list AS List<String>;
+DECLARE $basket_table AS String;
 DECLARE $out_table AS String;
+
+-- список таблиц может приехать пустым: тогда читаем корзину.
+-- Одна ветка вместо EVALUATE IF/DO BEGIN — тело запроса не дублируется.
+$src = IF(ListLength($tables_list) == 0, AsList($basket_table), $tables_list);
 
 $template = cast(FileContent("prompt_pairwise.txt") as Utf8);
 
@@ -201,7 +206,7 @@ SELECT
   res.* WITHOUT if exists res._other, res.infer_dialog, res.infer_dialog_rev
 FROM (
   SELECT t.*
-  FROM Each($tables_list) as t
+  FROM Each($src) as t
   WHERE
     -- близкая пара: звёзды второго этапа почти не различают ответы
     ABS($overall_1(t.meta_info) - $overall_2(t.meta_info)) <= $gap

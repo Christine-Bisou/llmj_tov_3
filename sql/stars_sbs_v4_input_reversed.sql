@@ -14,9 +14,12 @@ DECLARE $out_table AS String;
 -- markers_1_answer / markers_2_answer, model_1_analysis / model_2_analysis
 -- и pointwise_1 / pointwise_2. Парсить dst здесь больше не нужно.
 --
--- ЭТО ПРЯМОЙ ПОРЯДОК: answer_1 идёт первым. Обратный — в файле
--- stars_sbs_v4_input_reversed.sql, питон-блок там обязан совпадать
--- с этим до буквы: расходятся — расходятся и два прогона.
+-- ЭТО ОБРАТНЫЙ ПОРЯДОК: первым идёт answer_2. Прямой — в файле
+-- stars_sbs_v4_input.sql, питон-блок там обязан совпадать с этим до буквы:
+-- расходятся — расходятся и два прогона.
+--
+-- В ответе на этот прогон model_1 означает answer_2 — нормализовать при
+-- склейке, как это делает judge_merge_pretty.sql через $flip.
 --
 -- prompt_template.txt — это prompts/tov_stars_sbs_v4_audit.md
 -- (девять плейсхолдеров, см. вызов render ниже).
@@ -196,21 +199,25 @@ def build_judge_input(
 
 $build_judge_input = Python3::build_judge_input($script);
 
+-- Ответы переставлены местами, и вместе с ними — весь черновик: на позицию 1
+-- едет answer_2 со своими markers_2_answer / model_2_analysis / pointwise_2,
+-- на позицию 2 — answer_1 со своими. Перепутать половины нельзя: джадж будет
+-- сверять цитаты по чужому тексту, не найдёт их и снесёт всю разметку как
+-- «маркер без цитаты» — это будет выглядеть не сбоем, а работой аудита.
 INSERT INTO $out_table WITH TRUNCATE
 SELECT
   Yson::ParseJson(
     $build_judge_input(
       Yson::SerializeJson(Yson::From(t.dialog)),
       $template,
-      -- порядок строго 1 к 1, 2 к 2: черновик должен приехать к своему ответу
-      cast(t.answer_1 as Utf8),
       cast(t.answer_2 as Utf8),
-      cast(t.model_1_analysis as Utf8),
+      cast(t.answer_1 as Utf8),
       cast(t.model_2_analysis as Utf8),
-      cast(Yson::SerializeJson(t.markers_1_answer) as Utf8),
+      cast(t.model_1_analysis as Utf8),
       cast(Yson::SerializeJson(t.markers_2_answer) as Utf8),
-      cast(Yson::SerializeJson(t.pointwise_1) as Utf8),
-      cast(Yson::SerializeJson(t.pointwise_2) as Utf8)
+      cast(Yson::SerializeJson(t.markers_1_answer) as Utf8),
+      cast(Yson::SerializeJson(t.pointwise_2) as Utf8),
+      cast(Yson::SerializeJson(t.pointwise_1) as Utf8)
     )
   ) AS infer_dialog,
 

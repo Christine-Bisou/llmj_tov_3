@@ -52,18 +52,22 @@ def process_json(s):
 
 $process_json = Python3::process_json($script);
 
--- В поинтвайзном промте три ключа верхнего уровня:
--- analysis, linguistic_scan, markers.
-$markers  = ($node) -> { RETURN Yson::Lookup($node, 'markers'); };
-$scan     = ($node) -> { RETURN Yson::LookupString($node, 'linguistic_scan') ?? ''; };
-$analysis = ($node) -> { RETURN Yson::LookupString($node, 'analysis') ?? ''; };
+-- В поинтвайзном промте ключи верхнего уровня: analysis, linguistic_scan,
+-- markers. У объединённого промта (маркеры + звёзды) добавляется evaluation
+-- с clarity / liveliness / connect / overall. Если промт был чисто маркерный,
+-- Lookup вернёт null и колонка просто останется пустой.
+$markers    = ($node) -> { RETURN Yson::Lookup($node, 'markers'); };
+$scan       = ($node) -> { RETURN Yson::LookupString($node, 'linguistic_scan') ?? ''; };
+$analysis   = ($node) -> { RETURN Yson::LookupString($node, 'analysis') ?? ''; };
+$evaluation = ($node) -> { RETURN Yson::Lookup($node, 'evaluation'); };
 
 -- Первая таблица несёт весь исходный набор колонок пары — она и станет базой.
 $slot_1 = (
     SELECT
-        $markers(node)   AS ext_markers_1,
-        $scan(node)      AS ext_linguistic_scan_1,
-        $analysis(node)  AS ext_analysis_1,
+        $markers(node)    AS ext_markers_1,
+        $evaluation(node) AS ext_evaluation_1,
+        $scan(node)       AS ext_linguistic_scan_1,
+        $analysis(node)   AS ext_analysis_1,
         node IS NOT NULL AS markers_parsed_1,
         p.* WITHOUT IF EXISTS
             p.node, p.dst, p.answer_slot,
@@ -78,9 +82,10 @@ $slot_1 = (
 $slot_2 = (
     SELECT
         p.instruct_id    AS instruct_id,
-        $markers(node)   AS ext_markers_2,
-        $scan(node)      AS ext_linguistic_scan_2,
-        $analysis(node)  AS ext_analysis_2,
+        $markers(node)    AS ext_markers_2,
+        $evaluation(node) AS ext_evaluation_2,
+        $scan(node)       AS ext_linguistic_scan_2,
+        $analysis(node)   AS ext_analysis_2,
         node IS NOT NULL AS markers_parsed_2
     FROM (
         SELECT r.*, $process_json(CAST(r.dst AS String)) AS node
@@ -94,6 +99,7 @@ $slot_2 = (
 INSERT INTO {{output1}} WITH TRUNCATE
 SELECT
     s2.ext_markers_2          AS ext_markers_2,
+    s2.ext_evaluation_2       AS ext_evaluation_2,
     s2.ext_linguistic_scan_2  AS ext_linguistic_scan_2,
     s2.ext_analysis_2         AS ext_analysis_2,
     s1.markers_parsed_1 AND s2.markers_parsed_2 AS markers_parsed_ok,

@@ -8,11 +8,20 @@ PRAGMA yt.InferSchema = '1';
 
 DECLARE $input1 AS String;
 DECLARE $output1 AS String;
+DECLARE $output2 AS String;
 
 -- Сборка входа для второго этапа (v4: аудит черновика + SbS вердикт).
 -- $input1 — выход markers_stars_pointwise_parse.sql: там уже лежат
 -- markers_1_answer / markers_2_answer, model_1_analysis / model_2_analysis
 -- и pointwise_1 / pointwise_2. Парсить dst здесь больше не нужно.
+--
+-- Два выхода:
+--   $output1 — прямой порядок (answer_1 идёт первым),
+--   $output2 — обратный (answer_2 идёт первым).
+-- В ответе на обратный прогон model_1 означает answer_2 — нормализовать
+-- при склейке, как это делает judge_merge_pretty.sql.
+-- Черновик переставляется вместе со своим ответом: маркеры, разбор и звёзды
+-- обязаны ехать к тому ответу, по которому их выставили.
 --
 -- prompt_template.txt — это prompts/tov_stars_sbs_v4_audit.md
 -- (девять плейсхолдеров, см. вызов render ниже).
@@ -192,6 +201,7 @@ def build_judge_input(
 
 $build_judge_input = Python3::build_judge_input($script);
 
+-- ===================== ПРЯМОЙ ПОРЯДОК =====================
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
   Yson::ParseJson(
@@ -211,5 +221,30 @@ SELECT
   ) AS infer_dialog,
 
   -- WITHOUT обязан быть последним элементом списка
+  t.* WITHOUT IF EXISTS t.tov_prompt, t._other, t.infer_dialog, t.dst, t.reasoning_dst
+FROM $input1 AS t;
+
+-- ===================== ОБРАТНЫЙ ПОРЯДОК =====================
+-- Ответы переставлены местами, и вместе с ними — весь черновик:
+-- на позицию 1 едет answer_2 со своими markers_2_answer / model_2_analysis /
+-- pointwise_2, на позицию 2 — answer_1 со своими. Перепутать половины здесь
+-- нельзя: джадж будет проверять цитаты по чужому тексту и снесёт всю разметку.
+INSERT INTO $output2 WITH TRUNCATE
+SELECT
+  Yson::ParseJson(
+    $build_judge_input(
+      Yson::SerializeJson(Yson::From(t.dialog)),
+      $template,
+      cast(t.answer_2 as Utf8),
+      cast(t.answer_1 as Utf8),
+      cast(t.model_2_analysis as Utf8),
+      cast(t.model_1_analysis as Utf8),
+      cast(Yson::SerializeJson(t.markers_2_answer) as Utf8),
+      cast(Yson::SerializeJson(t.markers_1_answer) as Utf8),
+      cast(Yson::SerializeJson(t.pointwise_2) as Utf8),
+      cast(Yson::SerializeJson(t.pointwise_1) as Utf8)
+    )
+  ) AS infer_dialog,
+
   t.* WITHOUT IF EXISTS t.tov_prompt, t._other, t.infer_dialog, t.dst, t.reasoning_dst
 FROM $input1 AS t;

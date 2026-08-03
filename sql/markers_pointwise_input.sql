@@ -7,13 +7,19 @@ PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '1';
 
 DECLARE $tables_list AS List<String>;
-DECLARE $out_table AS String;
+DECLARE $output1 AS String;
+DECLARE $output2 AS String;
 
 -- Поинтвайзный первый этап: в промт уходит РОВНО ОДИН ответ.
--- Поэтому из каждой исходной строки делаем две: answer_slot = 1 (answer_1)
--- и answer_slot = 2 (answer_2). Инфер гоняется один раз по колонке
--- infer_dialog, дальше markers_pointwise_collapse.sql схлопывает пару обратно
--- в одну строку с ext_markers_1 / ext_markers_2.
+-- Вход прежний (одна строка = пара), выходов два:
+--   $output1 — infer_dialog собран по answer_1,
+--   $output2 — infer_dialog собран по answer_2.
+-- Каждый уходит в свой узел инфера, дальше markers_pointwise_collapse.sql
+-- джойнит их обратно по instruct_id в ext_markers_1 / ext_markers_2.
+--
+-- Строки в обеих таблицах — один к одному по instruct_id, набор колонок тоже
+-- одинаковый: отличается только содержимое infer_dialog. Колонка answer_slot
+-- проставлена константой, чтобы таблицы не путались местами.
 --
 -- prompt_template.txt — это prompts/tov_binary_markers_pointwise.md
 -- (одна плейсхолдер-переменная {{model_answer}} вместо двух).
@@ -168,25 +174,33 @@ def build_pointwise_input(
 
 $build_pointwise_input = Python3::build_pointwise_input($script);
 
-INSERT INTO $out_table WITH TRUNCATE
+-- ===================== ВЫХОД 1: первый ответ пары =====================
+INSERT INTO $output1 WITH TRUNCATE
 SELECT
+  1 AS answer_slot,
   Yson::ParseJson(
     $build_pointwise_input(
-      Yson::SerializeJson(Yson::From(s.${global.dialog_column})),
+      Yson::SerializeJson(Yson::From(t.${global.dialog_column})),
       $template,
-      IF(
-        s.answer_slot = 1,
-        cast(s.${global.answer_1_column} as Utf8),
-        cast(s.${global.answer_2_column} as Utf8)
-      )
+      cast(t.${global.answer_1_column} as Utf8)
     )
   ) AS infer_dialog,
 
-  -- answer_slot приезжает уже скаляром из FLATTEN и уходит в вывод внутри s.*
   -- WITHOUT обязан быть последним элементом списка, иначе YQL ругается
-  s.* WITHOUT IF EXISTS s.tov_prompt, s._other, s.infer_dialog
-FROM (
-  SELECT t.*, AsList(1, 2) AS answer_slot
-  FROM Each($tables_list) AS t
-) AS s
-FLATTEN LIST BY s.answer_slot;
+  t.* WITHOUT IF EXISTS t.answer_slot, t.tov_prompt, t._other, t.infer_dialog
+FROM Each($tables_list) AS t;
+
+-- ===================== ВЫХОД 2: второй ответ пары =====================
+INSERT INTO $output2 WITH TRUNCATE
+SELECT
+  2 AS answer_slot,
+  Yson::ParseJson(
+    $build_pointwise_input(
+      Yson::SerializeJson(Yson::From(t.${global.dialog_column})),
+      $template,
+      cast(t.${global.answer_2_column} as Utf8)
+    )
+  ) AS infer_dialog,
+
+  t.* WITHOUT IF EXISTS t.answer_slot, t.tov_prompt, t._other, t.infer_dialog
+FROM Each($tables_list) AS t;

@@ -124,10 +124,12 @@ $verdicts = (
             CAST(t.source_B AS String)
         ) AS g,
         -- предикт берём из tov_winner (model_1 / model_2 / tie / conflict),
-        -- а если его нет — из имени сорса
+        -- а если его нет — из имени сорса.
+        -- Через IF, а не NULLIF: NULLIF появился только в YQL 2025.04.
         $canon(
-            COALESCE(
-                NULLIF(CAST(t.tov_winner AS String), ''),
+            IF(
+                $lower(CAST(t.tov_winner AS String)) != '',
+                CAST(t.tov_winner AS String),
                 CAST(t.tov_winner_source AS String)
             ),
             CAST(t.source_A AS String),

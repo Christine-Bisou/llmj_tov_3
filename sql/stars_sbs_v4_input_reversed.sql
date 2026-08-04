@@ -206,6 +206,8 @@ $build_judge_input = Python3::build_judge_input($script);
 -- «маркер без цитаты» — это будет выглядеть не сбоем, а работой аудита.
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
+  'reversed' AS pass_order,
+
   Yson::ParseJson(
     $build_judge_input(
       Yson::SerializeJson(Yson::From(t.dialog)),
@@ -222,5 +224,5 @@ SELECT
   ) AS infer_dialog,
 
   -- WITHOUT обязан быть последним элементом списка
-  t.* WITHOUT IF EXISTS t.tov_prompt, t._other, t.infer_dialog, t.dst, t.reasoning_dst
+  t.* WITHOUT IF EXISTS t.pass_order, t.tov_prompt, t._other, t.infer_dialog, t.dst, t.reasoning_dst
 FROM $input1 AS t;

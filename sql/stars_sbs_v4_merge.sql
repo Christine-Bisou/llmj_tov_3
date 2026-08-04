@@ -6,12 +6,14 @@ PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '2';
 
 DECLARE $input1 AS String;
-DECLARE $input2 AS String;
 DECLARE $output1 AS String;
 
 -- Склейка прямого и обратного прохода второго этапа (v4: аудит + SbS).
--- $input1 — прямой прогон (answer_1 шёл первым), $input2 — обратный.
--- В обеих таблицах ответ джаджа лежит в dst.
+--
+-- ВХОД ОДИН: обе прокачки лежат в одной таблице друг под другом и различаются
+-- колонкой pass_order ('direct' / 'reversed') — её проставляют
+-- stars_sbs_v4_input.sql и stars_sbs_v4_input_reversed.sql. Ответ джаджа
+-- в обеих половинах лежит в dst.
 --
 -- ГЛАВНОЕ ПРО РЕВЕРС: в обратном прогоне model_1 — это answer_2, а model_2 —
 -- answer_1. Поэтому везде, где берём значения из обратного прохода для
@@ -205,13 +207,24 @@ $as_source = ($w, $s1, $s2) -> {
 };
 
 -- ========================= РАЗБОР =========================
-$parsed = (
+$direct = (
+    SELECT t.*, $process_json(CAST(t.dst AS String)) AS dir_yson
+    FROM $input1 AS t
+    WHERE t.pass_order == 'direct'
+);
+
+$reversed = (
     SELECT
-        i1.*,
-        $process_json(CAST(i1.dst AS String)) AS dir_yson,
-        $process_json(CAST(i2.dst AS String)) AS rev_yson
-    FROM $input1 AS i1
-    INNER JOIN $input2 AS i2
+        t.instruct_id                         AS instruct_id,
+        $process_json(CAST(t.dst AS String))  AS rev_yson
+    FROM $input1 AS t
+    WHERE t.pass_order == 'reversed'
+);
+
+$parsed = (
+    SELECT d.*, r.rev_yson AS rev_yson
+    FROM $direct AS d
+    INNER JOIN $reversed AS r
     USING (instruct_id)
 );
 
@@ -291,7 +304,7 @@ SELECT
 
     -- WITHOUT обязан быть последним элементом списка
     f.* WITHOUT IF EXISTS
-        f.dir_yson, f.rev_yson,
+        f.dir_yson, f.rev_yson, f.pass_order,
         f.mk1_dir, f.mk2_dir, f.mk1_rev, f.mk2_rev,
         f.w_direct, f.w_reversed_norm,
         f.dst, f.reasoning_dst, f.infer_dialog, f.tov_prompt, f._other

@@ -1,9 +1,11 @@
+PRAGMA Yson.AutoConvert;
+PRAGMA yson.DisableStrict;
+
 DECLARE $input1 AS String;
 DECLARE $output1 AS String;
 
--- Диалог-заглушка для строк, где колонка dialog пустая (NULL).
--- Разметка по таким строкам есть, а сам диалог в выгрузку не попал,
--- поэтому подставляем его текстом — иначе джадж получит пустой контекст.
+-- Диалог-заглушка для строк, где в разметке dialog пустой.
+-- Разметка по таким строкам есть, а сам диалог в выгрузку не попал.
 $fallback_dialog = CAST(@@[
   {
     "content": "а ты знаешь алиса а ты знаешь видеоролик по майнкрафту называется майнкрафт",
@@ -139,24 +141,73 @@ $fallback_dialog = CAST(@@[
   }
 ]@@ AS Utf8);
 
-INSERT INTO $output1
+-- В таблице разметки dialog лежит ТЕКСТОМ с JSON внутри, а не структурой.
+-- Поэтому Yson::From(dialog) заворачивал его в JSON-строку с кавычками:
+-- ниже по пайплайну json.loads возвращал str вместо списка реплик,
+-- и диалог приезжал пустым. Здесь текст разбираем явно.
+$dialog_text = ($raw) -> {
+    $t = String::Strip(COALESCE(CAST($raw AS String), ''));
+    -- пустым считаем и NULL, и '', и текстовые 'null' / '[]'
+    RETURN IF($t IN ('', 'null', 'NULL', 'Null', '[]', '{}'),
+              $fallback_dialog,
+              CAST($t AS Utf8));
+};
+
+-- Нативный список реплик: с ним Yson::From(dialog) в pairwise_input работает как надо
+$dialog_struct = ($json) -> {
+    RETURN Yson::ConvertTo(
+        Yson::ParseJson($json),
+        List<Struct<content: Utf8?, role: Utf8?>>
+    );
+};
+
+-- '⭐⭐⭐' -> 3, пустая ячейка -> NULL (считаем вхождения, а не длину:
+-- у части оценок к звезде приклеен вариационный селектор U+FE0F)
+$stars = ($v) -> {
+    $t = COALESCE(CAST($v AS String), '');
+    RETURN NULLIF(
+        CAST((LENGTH($t) - LENGTH(String::ReplaceAll($t, '⭐', ''))) / LENGTH('⭐') AS Int32),
+        0
+    );
+};
+
+-- SbS в словарь пайплайна: 'A' -> model_1 (answer_a), 'B' -> model_2 (answer_b)
+$verdict = ($v) -> {
+    $t = String::AsciiToUpper(String::Strip(COALESCE(CAST($v AS String), '')));
+    RETURN CASE
+        WHEN $t IN ('A', 'MODEL_1') THEN 'model_1'
+        WHEN $t IN ('B', 'MODEL_2') THEN 'model_2'
+        ELSE 'draw'
+    END;
+};
+
+-- пустые ячейки не тащим как '' — пусть будет NULL
+$cell = ($v) -> {
+    RETURN CAST(NULLIF(String::Strip(COALESCE(CAST($v AS String), '')), '') AS Utf8);
+};
+
+INSERT INTO $output1 WITH TRUNCATE
 SELECT
-    t.`Ссылка` AS link,
-    -- если dialog NULL, отдаём заглушку выше; иначе сериализуем как раньше
-    COALESCE(Yson::SerializeJson(Yson::From(t.dialog)), $fallback_dialog) AS dialog_str,
-    t.model_a AS model_a,
-    t.answer_a AS answer_a,
-    t.model_b AS model_b,
-    t.answer_b AS answer_b,
-    t.`Ясность a` AS clarity_a,
-    t.`Живость a` AS vividness_a,
-    t.`Коннект a` AS connect_a,
-    t.`pointwise a` AS pointwise_a,
-    t.`Ясность b` AS clarity_b,
-    t.`Живость b` AS vividness_b,
-    t.`Коннект b` AS connect_b,
-    t.`pointwise b` AS pointwise_b,
-    t.SbS AS winner,
-    t.`Комментарий` AS comment,
-    t.`Берем в гс?` AS is_gs
+    CAST(t.`Ссылка` AS Utf8)        AS link,
+
+    $dialog_struct($dialog_text(t.dialog)) AS dialog,      -- список реплик
+    $dialog_text(t.dialog)                 AS dialog_str,  -- он же текстом, на всякий случай
+
+    CAST(t.model_a AS Utf8)         AS model_a,
+    CAST(t.answer_a AS Utf8)        AS answer_a,
+    CAST(t.model_b AS Utf8)         AS model_b,
+    CAST(t.answer_b AS Utf8)        AS answer_b,
+
+    $stars(t.`Ясность a`)           AS clarity_a,
+    $stars(t.`Живость a`)           AS vividness_a,
+    $stars(t.`Коннект a`)           AS connect_a,
+    $stars(t.`pointwise a`)         AS pointwise_a,
+    $stars(t.`Ясность b`)           AS clarity_b,
+    $stars(t.`Живость b`)           AS vividness_b,
+    $stars(t.`Коннект b`)           AS connect_b,
+    $stars(t.`pointwise b`)         AS pointwise_b,
+
+    $verdict(t.SbS)                 AS winner,
+    $cell(t.`Комментарий`)          AS comment,
+    $cell(t.`Берем в гс?`)          AS is_gs
 FROM $input1 AS t;

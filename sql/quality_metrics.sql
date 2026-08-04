@@ -92,19 +92,26 @@ $marker_rows = (
 );
 
 -- ========================= ВЕРДИКТ =========================
--- Победитель приводится к 'a' / 'b' / 'draw'. Золото может лежать сорсом
--- (значение source_A / source_B), может — как model_1 / A / draw; предикт
--- после склейки лежит сорсом в tov_winner_source.
+-- Победитель приводится к 'a' / 'b' / 'draw'.
+-- Золото пишет 'answer_b', разметка — 'model_2', склейка — имя сорса; всё это
+-- одно и то же. Сравнение регистронезависимое, пробелы по краям срезаются.
 -- 'conflict' (проходы назвали разных победителей) считаем ничьёй: как выбор
 -- он не состоялся. Долю таких строк отдаём отдельной метрикой ниже.
-$canon = ($v, $sa, $sb) -> {
+$lower = ($v) -> {
+    RETURN String::AsciiToLower(String::Strip(COALESCE($v, '')));
+};
+
+$canon = ($raw, $sa, $sb) -> {
     RETURN CASE
-        WHEN $v IS NULL OR $v = ''                              THEN 'unknown'
-        WHEN $v IN ('draw', 'tie', 'conflict')                  THEN 'draw'
-        WHEN $v IN ('model_1', 'a', 'A', 'answer_1')            THEN 'a'
-        WHEN $v IN ('model_2', 'b', 'B', 'answer_2')            THEN 'b'
-        WHEN $sa != '' AND $v = $sa                             THEN 'a'
-        WHEN $sb != '' AND $v = $sb                             THEN 'b'
+        WHEN $lower($raw) = ''                                          THEN 'unknown'
+        WHEN $lower($raw) IN ('draw', 'tie', 'equal', 'both', 'same',
+                              'conflict', 'both_bad', 'both_good')      THEN 'draw'
+        WHEN $lower($raw) IN ('a', 'answer_a', 'model_1', 'answer_1',
+                              'left', 'first', '1')                     THEN 'a'
+        WHEN $lower($raw) IN ('b', 'answer_b', 'model_2', 'answer_2',
+                              'right', 'second', '2')                   THEN 'b'
+        WHEN $lower($sa) != '' AND $lower($raw) = $lower($sa)           THEN 'a'
+        WHEN $lower($sb) != '' AND $lower($raw) = $lower($sb)           THEN 'b'
         ELSE 'unknown'
     END;
 };
@@ -112,14 +119,19 @@ $canon = ($v, $sa, $sb) -> {
 $verdicts = (
     SELECT
         $canon(
-            COALESCE(CAST(t.golden_winner AS String), ''),
-            COALESCE(CAST(t.source_A AS String), ''),
-            COALESCE(CAST(t.source_B AS String), '')
+            CAST(t.golden_winner AS String),
+            CAST(t.source_A AS String),
+            CAST(t.source_B AS String)
         ) AS g,
+        -- предикт берём из tov_winner (model_1 / model_2 / tie / conflict),
+        -- а если его нет — из имени сорса
         $canon(
-            COALESCE(CAST(t.tov_winner_source AS String), ''),
-            COALESCE(CAST(t.source_A AS String), ''),
-            COALESCE(CAST(t.source_B AS String), '')
+            COALESCE(
+                NULLIF(CAST(t.tov_winner AS String), ''),
+                CAST(t.tov_winner_source AS String)
+            ),
+            CAST(t.source_A AS String),
+            CAST(t.source_B AS String)
         ) AS p,
         COALESCE(CAST(t.tov_winner AS String), '') AS raw_pred
     FROM $input1 AS t
@@ -208,6 +220,24 @@ $winner_rows = (
         WHERE g != 'draw'
     )
     UNION ALL
+    -- служебная строка: сколько строк дошло до счёта и сколько отвалилось
+    -- из-за нераспознанного вердикта. Если TP == 0, метрики выше пустые не
+    -- потому что «всё плохо», а потому что считать было не по чему.
+    SELECT * FROM (
+        SELECT
+            'winner'                                                    AS kind,
+            'winner_rows_counted'                                       AS marker,
+            CAST(SUM(IF(g != 'unknown' AND p != 'unknown', 1, 0)) AS Int64) AS TP,
+            CAST(SUM(IF(g = 'unknown', 1, 0)) AS Int64)                 AS FP,
+            CAST(SUM(IF(p = 'unknown', 1, 0)) AS Int64)                 AS FN,
+            CAST(COUNT(*) AS Int64)                                     AS TN,
+            NULL                                                        AS Precision,
+            NULL                                                        AS Recall,
+            Just(AVG(IF(g != 'unknown' AND p != 'unknown', 1.0, 0.0)))  AS Accuracy,
+            NULL                                                        AS F1_Score
+        FROM $verdicts
+    )
+    UNION ALL
     -- служебная строка: как часто прямой и обратный проходы назвали разных
     -- победителей. В accuracy это не входит, но объясняет её просадку.
     SELECT * FROM (
@@ -228,6 +258,8 @@ $winner_rows = (
 
 -- В строках вердикта TP = совпало, FN = не совпало, FP = засчитано по 0.5
 -- (только у soft). Precision / Recall / F1 там не определены — остаются пустыми.
+-- В строке winner_rows_counted: TP = сколько строк посчитано, FP = золото не
+-- распознано, FN = предикт не распознан, TN = всего строк без скипов.
 INSERT INTO $output1 WITH TRUNCATE
 SELECT * FROM (
     SELECT * FROM $marker_rows

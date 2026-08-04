@@ -218,9 +218,6 @@ $parsed = (
 
 $calc = (
     SELECT
-        -- tov_winner мог остаться от прошлых склеек: снимаем, иначе алиас ниже
-        -- снова упрётся в «Duplicated member»
-        p.* WITHOUT IF EXISTS p.tov_winner,
         $verdict(dir_yson)          AS w_direct,
         $flip($verdict(rev_yson))   AS w_reversed_norm,
 
@@ -228,7 +225,12 @@ $calc = (
         $mk(dir_yson, 'model_2_markers_review') AS mk2_dir,
         -- в обратном проходе разметка answer_1 лежит под model_2 — и наоборот
         $mk(rev_yson, 'model_2_markers_review') AS mk1_rev,
-        $mk(rev_yson, 'model_1_markers_review') AS mk2_rev
+        $mk(rev_yson, 'model_1_markers_review') AS mk2_rev,
+
+        -- tov_winner мог остаться от прошлых склеек: снимаем, иначе алиас ниже
+        -- упрётся в «Duplicated member». Звёздочка с WITHOUT — строго последняя
+        -- в списке: после неё парсер ждёт только имена колонок.
+        p.* WITHOUT IF EXISTS p.tov_winner
     FROM $parsed AS p
 );
 

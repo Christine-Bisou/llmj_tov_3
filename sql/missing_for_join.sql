@@ -63,15 +63,23 @@ SELECT
 FROM $missing
 ORDER BY for_join;
 
+-- считаем каждую цифру отдельным именованным запросом: скалярные подзапросы
+-- прямо в SELECT доступны только с версии языка 2025.04
+$rows_input1 = SELECT COUNT(*) FROM $input1;
+$rows_input2 = SELECT COUNT(*) FROM $input2;
+$keys_input1 = SELECT COUNT(*) FROM $done;
+$keys_input2 = SELECT COUNT(DISTINCT k) FROM $src;
+$rows_missing = SELECT COUNT(*) FROM $missing;
+$keys_missing = SELECT COUNT(DISTINCT k) FROM $missing;
+
 INSERT INTO $output2 WITH TRUNCATE
 SELECT
-    (SELECT COUNT(*) FROM $input2)              AS rows_input2,
-    (SELECT COUNT(*) FROM $input1)              AS rows_input1,
-    (SELECT COUNT(*) FROM $src)                 AS rows_src,
-    (SELECT COUNT(DISTINCT k) FROM $src)        AS keys_input2,
-    (SELECT COUNT(*) FROM $done)                AS keys_input1,
-    (SELECT COUNT(*) FROM $missing)             AS rows_missing,
-    (SELECT COUNT(DISTINCT k) FROM $missing)    AS keys_missing;
+    $rows_input2  AS rows_input2,
+    $rows_input1  AS rows_input1,
+    $keys_input2  AS keys_input2,
+    $keys_input1  AS keys_input1,
+    $rows_missing AS rows_missing,
+    $keys_missing AS keys_missing;
 
 -- ------------------------------------------------------------------
 -- Вариант «строка в строку»

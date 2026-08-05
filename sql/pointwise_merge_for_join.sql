@@ -106,10 +106,11 @@ $score = ($node, $asp) -> {
     );
 };
 
+-- слот задаётся самой таблицей: $input1 — прогон по answer_1, $input2 — по
+-- answer_2. Колонки answer_slot в них нет, фильтровать нечего.
 $slot_1 = (
     SELECT t.*, $parse_dst(CAST(t.dst AS String)) AS node
     FROM $input1 AS t
-    WHERE t.answer_slot == 1
 );
 
 -- for_join обязателен: без него USING (for_join) не к чему привязаться.
@@ -119,7 +120,6 @@ $slot_2 = (
         t.for_join                        AS for_join,
         $parse_dst(CAST(t.dst AS String)) AS node
     FROM $input2 AS t
-    WHERE t.answer_slot == 2
 );
 
 INSERT INTO $output1 WITH TRUNCATE

@@ -5,11 +5,11 @@ PRAGMA yt.UseNativeYtTypes;
 PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '1';
 
-DECLARE $tables_list AS List<String>;
+DECLARE $input1 AS String;
 DECLARE $output1 AS String;
 DECLARE $output2 AS String;
 
--- Вход прежний (одна строка = пара), выходов два:
+-- Вход один ($input1: одна строка = пара), выходов два:
 --   $output1 — infer_dialog собран по answer_1,
 --   $output2 — infer_dialog собран по answer_2.
 -- Строки в обеих таблицах один к одному, набор колонок тоже одинаковый:
@@ -182,7 +182,7 @@ SELECT
 
   -- WITHOUT обязан быть последним элементом списка, иначе YQL ругается
   t.* WITHOUT IF EXISTS t.answer_slot, t.tov_prompt, t._other, t.infer_dialog
-FROM Each($tables_list) AS t;
+FROM $input1 AS t;
 
 -- ===================== ВЫХОД 2: второй ответ пары =====================
 INSERT INTO $output2 WITH TRUNCATE
@@ -197,4 +197,4 @@ SELECT
   ) AS infer_dialog,
 
   t.* WITHOUT IF EXISTS t.answer_slot, t.tov_prompt, t._other, t.infer_dialog
-FROM Each($tables_list) AS t;
+FROM $input1 AS t;

@@ -12,12 +12,17 @@ PRAGMA yt.InferSchema = '2';
 -- Склейка двух слотов поточечной оценки: $input1 — разбор answer_1,
 -- $input2 — разбор answer_2. Одна строка на пару ответов.
 --
--- ПРО КЛЮЧ: instruct_id — это ключ задания, а не пары. Один диалог обычно
--- оценивается по нескольким парам моделей, поэтому джойн только по instruct_id
--- сцепляет слот от одной пары со слотом от другой и размножает строки.
--- Ключ — instruct_id + обе модели. Сорсы в слотах НЕ переставлены (в отличие
--- от самих ответов), так что answer_source_1 и answer_source_2 сравниваются
--- напрямую, без нормализации порядка.
+-- КЛЮЧ ДЖОЙНА: instruct_id + обе модели. instruct_id — ключ задания, а не пары:
+-- одно задание обычно оценивается по нескольким парам, и джойн только по нему
+-- сцепляет слот от одной пары со слотом от другой.
+--
+-- Сорсы в ключ идут не как есть, а нормализованными, потому что джойн по сырым
+-- колонкам разваливается на ровном месте:
+--   * NULL не равен NULL — строка с пустым сорсом молча пропадает;
+--   * типы могут не совпасть (String против Utf8, Yson после InferSchema);
+--   * порядок сорсов в правой таблице может отличаться.
+-- CAST в String + COALESCE снимают первые два пункта, сортировка пары — третий.
+-- Что где лежит по факту — покажет pointwise_slots_join_check.sql.
 
 $script = @@#py
 import json
@@ -116,20 +121,42 @@ $score = ($node, $asp) -> {
     );
 };
 
+-- ========================= КЛЮЧ ПАРЫ =========================
+-- Пустой сорс превращаем в '', иначе NULL != NULL и строка выпадает из джойна.
+$as_key = ($s) -> {
+    RETURN COALESCE(CAST($s AS String), '');
+};
+
+-- Пару держим отсортированной: два сорса дают одинаковые src_lo/src_hi
+-- независимо от того, в каком порядке они записаны в конкретной таблице.
+-- Кто из них answer_1, а кто answer_2, определяет answer_slot, а не эти колонки,
+-- так что на разбор ответов сортировка не влияет.
+$src_lo = ($a, $b) -> {
+    RETURN IF($as_key($a) <= $as_key($b), $as_key($a), $as_key($b));
+};
+
+$src_hi = ($a, $b) -> {
+    RETURN IF($as_key($a) <= $as_key($b), $as_key($b), $as_key($a));
+};
+
+-- ========================= СЛОТЫ =========================
 $slot_1 = (
-    SELECT t.*, $parse_dst(CAST(t.dst AS String)) AS node
+    SELECT
+        $src_lo(t.answer_source_1, t.answer_source_2) AS src_lo,
+        $src_hi(t.answer_source_1, t.answer_source_2) AS src_hi,
+        $parse_dst(CAST(t.dst AS String))             AS node,
+        t.* WITHOUT IF EXISTS t.src_lo, t.src_hi, t.node
     FROM $input1 AS t
     WHERE t.answer_slot == 1
 );
 
--- Сорсы обязаны быть в проекции: без них джойн по ним не соберётся —
--- YQL не увидит колонку справа и упадёт ещё на разборе запроса.
+-- Ключевые колонки обязаны быть в проекции: без них джойну не по чему сходиться.
 $slot_2 = (
     SELECT
-        t.instruct_id                     AS instruct_id,
-        t.answer_source_1                 AS answer_source_1,
-        t.answer_source_2                 AS answer_source_2,
-        $parse_dst(CAST(t.dst AS String)) AS node
+        t.instruct_id                                 AS instruct_id,
+        $src_lo(t.answer_source_1, t.answer_source_2) AS src_lo,
+        $src_hi(t.answer_source_1, t.answer_source_2) AS src_hi,
+        $parse_dst(CAST(t.dst AS String))             AS node
     FROM $input2 AS t
     WHERE t.answer_slot == 2
 );
@@ -162,7 +189,8 @@ SELECT
     -- всё остальное (golden_*, worker_*, chief_*, answer_1/2, dialog...) —
     -- из первой таблицы как есть. WITHOUT обязан быть последним в списке.
     a.* WITHOUT IF EXISTS
-        a.node, a.dst, a.reasoning_dst, a.infer_dialog, a.answer_slot, a.sol
+        a.node, a.dst, a.reasoning_dst, a.infer_dialog, a.answer_slot, a.sol,
+        a.src_lo, a.src_hi
 FROM $slot_1 AS a
 INNER JOIN $slot_2 AS b
-USING (instruct_id, answer_source_1, answer_source_2);
+USING (instruct_id, src_lo, src_hi);

@@ -140,25 +140,77 @@ $src_hi = ($a, $b) -> {
 };
 
 -- ========================= СЛОТЫ =========================
-$slot_1 = (
+-- Уровень 1: считаем ключи и разбираем ответ джаджа. Джойна тут нет, размножить
+-- строки нечем — но повторы, если они есть во входе, доживают до сюда.
+$slot_1_keyed = (
     SELECT
         $src_lo(t.answer_source_1, t.answer_source_2) AS src_lo,
         $src_hi(t.answer_source_1, t.answer_source_2) AS src_hi,
+        COALESCE(CAST(t.dst AS String), '')           AS _dst_str,
         $parse_dst(CAST(t.dst AS String))             AS node,
-        t.* WITHOUT IF EXISTS t.src_lo, t.src_hi, t.node
+        t.* WITHOUT IF EXISTS
+            t.src_lo, t.src_hi, t.node, t._dst_str, t.pair_rows_1
     FROM $input1 AS t
     WHERE t.answer_slot == 1
 );
 
 -- Ключевые колонки обязаны быть в проекции: без них джойну не по чему сходиться.
-$slot_2 = (
+$slot_2_keyed = (
     SELECT
         t.instruct_id                                 AS instruct_id,
         $src_lo(t.answer_source_1, t.answer_source_2) AS src_lo,
         $src_hi(t.answer_source_1, t.answer_source_2) AS src_hi,
+        COALESCE(CAST(t.dst AS String), '')           AS _dst_str,
         $parse_dst(CAST(t.dst AS String))             AS node
     FROM $input2 AS t
     WHERE t.answer_slot == 2
+);
+
+-- Уровень 2: по одной строке на ключ с каждой стороны. Это и есть гарантия, что
+-- джойн ниже не задвоит: сколько бы повторов ни лежало во входе, дальше уходит
+-- ровно одна строка на (instruct_id + пара моделей), значит INNER JOIN даёт
+-- строгое соответствие один-к-одному.
+--
+-- Представителя выбираем по самому длинному dst: обрезанный ответ джаджа
+-- проигрывает полному, а не выигрывает по случайности. Второй ключ сортировки —
+-- сама строка, чтобы результат не менялся от запуска к запуску.
+--
+-- pair_rows_* — сколько исходных строк было на этот ключ. Единица везде значит,
+-- что схлопывать было нечего и дедуп ничего не выкинул; если увидишь >1, во
+-- входе были повторы. Колонки чисто диагностические, убираются без последствий.
+$slot_1 = (
+    SELECT x.* WITHOUT x._rn, x._dst_str
+    FROM (
+        SELECT
+            k.*,
+            ROW_NUMBER() OVER w  AS _rn,
+            COUNT(*)     OVER wc AS pair_rows_1
+        FROM $slot_1_keyed AS k
+        WINDOW
+            -- окно с ORDER BY выбирает представителя,
+            w  AS (PARTITION BY k.instruct_id, k.src_lo, k.src_hi
+                   ORDER BY LENGTH(k._dst_str) DESC, k._dst_str),
+            -- а окно без ORDER BY считает по всей группе: с ORDER BY COUNT(*)
+            -- стал бы накопительным и всегда возвращал единицу на первой строке
+            wc AS (PARTITION BY k.instruct_id, k.src_lo, k.src_hi)
+    ) AS x
+    WHERE x._rn == 1
+);
+
+$slot_2 = (
+    SELECT x.* WITHOUT x._rn, x._dst_str
+    FROM (
+        SELECT
+            k.*,
+            ROW_NUMBER() OVER w  AS _rn,
+            COUNT(*)     OVER wc AS pair_rows_2
+        FROM $slot_2_keyed AS k
+        WINDOW
+            w  AS (PARTITION BY k.instruct_id, k.src_lo, k.src_hi
+                   ORDER BY LENGTH(k._dst_str) DESC, k._dst_str),
+            wc AS (PARTITION BY k.instruct_id, k.src_lo, k.src_hi)
+    ) AS x
+    WHERE x._rn == 1
 );
 
 INSERT INTO $output1 WITH TRUNCATE
@@ -186,11 +238,15 @@ SELECT
 
     (a.node IS NOT NULL AND b.node IS NOT NULL) AS parsed_ok,
 
+    -- самопроверка: везде 1 — во входах не было повторов и дедуп ничего не тронул
+    a.pair_rows_1                            AS pair_rows_1,
+    b.pair_rows_2                            AS pair_rows_2,
+
     -- всё остальное (golden_*, worker_*, chief_*, answer_1/2, dialog...) —
     -- из первой таблицы как есть. WITHOUT обязан быть последним в списке.
     a.* WITHOUT IF EXISTS
         a.node, a.dst, a.reasoning_dst, a.infer_dialog, a.answer_slot, a.sol,
-        a.src_lo, a.src_hi
+        a.src_lo, a.src_hi, a.pair_rows_1
 FROM $slot_1 AS a
 INNER JOIN $slot_2 AS b
 USING (instruct_id, src_lo, src_hi);

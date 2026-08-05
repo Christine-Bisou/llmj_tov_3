@@ -1,5 +1,9 @@
 PRAGMA Yson.AutoConvert;
 PRAGMA yson.DisableStrict;
+PRAGMA SimpleColumns;
+PRAGMA yt.UseNativeYtTypes;
+PRAGMA AnsiInForEmptyOrNullableItemsCollections;
+PRAGMA yt.InferSchema = '2';
 
 DECLARE $input1 AS String;
 DECLARE $output1 AS String;
@@ -146,20 +150,29 @@ $fallback_dialog = CAST(@@[
 -- вернул бы сырые yson-байты со служебными маркерами, а CAST(... AS Utf8)
 -- вообще не компилируется.
 
+-- Строки, которым диалог подставляем принудительно, по ссылке на задание.
+-- Проверка «диалог пустой» на них не срабатывала, поэтому адресный список.
+-- Сюда можно дописать ещё ссылки через запятую.
+$fallback_links = AsList(
+    'https://yang.yandex-team.ru/task/92222562/00057f3462--6a2a59788c92c94e3d823a41'
+);
+
 -- В разметке dialog лежит ТЕКСТОМ с JSON внутри, а не структурой.
 -- Поэтому Yson::From(dialog) заворачивал его в JSON-строку с кавычками:
 -- ниже по пайплайну json.loads возвращал str вместо списка реплик,
 -- и диалог приезжал пустым. Здесь разбираем оба варианта:
 -- yson-строку с JSON и уже готовый список реплик.
-$dialog_text = ($raw) -> {
+$dialog_text = ($link, $raw) -> {
+    $l = String::Strip(COALESCE(Yson::ConvertToString($link), ''));
     $s = COALESCE(
         Yson::ConvertToString($raw),                 -- строка с JSON внутри
         Yson::SerializeJson(Yson::Parse($raw)),      -- уже структура
         ''
     );
     $t = String::Strip($s);
-    -- пустым считаем и NULL, и '', и текстовые 'null' / '[]'
-    RETURN IF($t IN ('', 'null', 'NULL', 'Null', '[]', '{}'),
+    -- подменяем по ссылке; заодно страхуемся от пустого диалога
+    -- (пустым считаем и NULL, и '', и текстовые 'null' / '[]')
+    RETURN IF($l IN $fallback_links OR $t IN ('', 'null', 'NULL', 'Null', '[]', '{}'),
               $fallback_dialog,
               CAST($t AS Utf8));
 };
@@ -200,8 +213,8 @@ INSERT INTO $output1 WITH TRUNCATE
 SELECT
     $cell(t.`Ссылка`)               AS link,
 
-    $dialog_struct($dialog_text(t.dialog)) AS dialog,      -- список реплик
-    $dialog_text(t.dialog)                 AS dialog_str,  -- он же текстом, на всякий случай
+    $dialog_struct($dialog_text(t.`Ссылка`, t.dialog)) AS dialog,      -- список реплик
+    $dialog_text(t.`Ссылка`, t.dialog)                 AS dialog_str,  -- он же текстом
 
     $cell(t.model_a)                AS model_a,
     $cell(t.answer_a)               AS answer_a,

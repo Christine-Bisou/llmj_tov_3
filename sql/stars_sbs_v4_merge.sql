@@ -225,19 +225,16 @@ $flip = ($v) -> {
 };
 
 -- Победитель сразу сорсом, а не «model_1»: имя модели читается без сверки с таблицей.
--- 'tie' и 'conflict' пробрасываем как есть: подменять их на 'tie' нельзя,
--- иначе несогласие проходов растворится в честных ничьих.
 $as_source = ($w, $s1, $s2) -> {
     RETURN CASE $w
         WHEN 'model_1' THEN COALESCE(CAST($s1 AS String), 'model_1')
         WHEN 'model_2' THEN COALESCE(CAST($s2 AS String), 'model_2')
-        ELSE COALESCE($w, 'tie')
+        ELSE 'draw'
     END;
 };
 
--- В формате разметки поле winner знает только имя сорса или 'draw' —
--- 'tie' и 'conflict' туда не пролезут, поэтому для второго выхода отдельная
--- обёртка. В рабочей таблице (выход 1) они остаются как есть.
+-- В формате разметки поле winner знает только имя сорса или 'draw', и пустую
+-- строку вместо отсутствующего сорса — отсюда отдельная обёртка.
 $winner_source = ($w, $s1, $s2) -> {
     RETURN CASE $w
         WHEN 'model_1' THEN COALESCE(CAST($s1 AS String), '')
@@ -285,9 +282,10 @@ $final = (
             WHEN w_direct = w_reversed_norm            THEN w_direct
             WHEN w_direct IN ('tie', 'draw')           THEN w_reversed_norm
             WHEN w_reversed_norm IN ('tie', 'draw')    THEN w_direct
-            -- проходы назвали разных победителей: это не ничья по существу,
-            -- а несогласие джаджа — помечаем отдельно, чтобы не мешать с tie
-            ELSE 'conflict'
+            -- проходы назвали разных победителей — ничья.
+            -- Что это было именно несогласие, а не честная ничья, видно по
+            -- agreement / strength в sbs и meta_info
+            ELSE 'draw'
         END AS tov_winner
     FROM $calc AS c
 );

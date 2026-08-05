@@ -76,75 +76,42 @@ $marker_names = AsList(
     'boundaries_violation', 'template_phrases', 'language_errors', 'inconsistency'
 );
 
--- ========================= КЛЮЧ ПАРЫ =========================
--- Ключ строим независимым от порядка: если обратная таблица собрана
--- перестановкой ответов, source_A и source_B в ней тоже могут быть переставлены,
--- и джойн по (source_A, source_B) в лоб не сойдётся ни с одной строкой.
--- Сортировка двух имён снимает вопрос: пара {alice, eva} даёт один ключ в любом
--- порядке. На зеркалирование вердикта это не влияет — оно определяется тем,
--- в каком порядке ответы попали в промпт, а не колонками таблицы.
---
--- Если в твоей таблице модели лежат в answer_source_1 / answer_source_2
--- (так в judge_merge_pretty.sql), поменяй имена в двух местах ниже.
-$pair_key = ($a, $b) -> {
-    $x = COALESCE(CAST($a AS String), '');
-    $y = COALESCE(CAST($b AS String), '');
-    RETURN IF($x <= $y, $x || '\t' || $y, $y || '\t' || $x);
-};
-
--- Порядок для выбора представителя среди повторов: берём самый длинный dst.
--- Обрезанный или пустой ответ джаджа проигрывает полному, а не выигрывает
--- по случайности; вторым ключом — сама строка, чтобы результат не менялся
--- от запуска к запуску.
-$dst_len = ($d) -> {
-    RETURN LENGTH(COALESCE(CAST($d AS String), ''));
-};
-
-$dst_str = ($d) -> {
-    RETURN COALESCE(CAST($d AS String), '');
-};
-
 -- ========================= ДЕДУП ВХОДОВ =========================
--- Один прогон обязан давать одну строку на пару. Если строк больше — это
--- перезапуск или двойная заливка, а не данные: лишние снимаем здесь, до джойна.
-$i1_keyed = (
-    SELECT
-        $pair_key(t.source_A, t.source_B) AS pair_key,
-        t.* WITHOUT IF EXISTS t.pair_key
-    FROM $input1 AS t
-);
-
-$i2_keyed = (
-    SELECT
-        $pair_key(t.source_A, t.source_B) AS pair_key,
-        t.* WITHOUT IF EXISTS t.pair_key
-    FROM $input2 AS t
-);
-
+-- Один прогон обязан давать одну строку на пару моделей. Если строк больше —
+-- это перезапуск или двойная заливка, а не данные: лишние снимаем здесь, до
+-- джойна, иначе повтор слева умножится на повтор справа.
+--
+-- Представителя среди повторов берём по самому длинному dst: обрезанный или
+-- пустой ответ джаджа проигрывает полному, а не выигрывает по случайности.
+-- Вторым ключом — сама строка, чтобы результат не менялся от запуска к запуску.
 $i1 = (
-    SELECT x.* WITHOUT x.rn
+    SELECT x.* WITHOUT x._dedup_rn
     FROM (
-        SELECT k.*, ROW_NUMBER() OVER w AS rn
-        FROM $i1_keyed AS k
-        WINDOW w AS (
-            PARTITION BY k.instruct_id, k.pair_key
-            ORDER BY $dst_len(k.dst) DESC, $dst_str(k.dst)
-        )
+        SELECT
+            t.*,
+            ROW_NUMBER() OVER (
+                PARTITION BY t.instruct_id, t.source_A, t.source_B
+                ORDER BY LENGTH(COALESCE(CAST(t.dst AS String), '')) DESC,
+                         COALESCE(CAST(t.dst AS String), '')
+            ) AS _dedup_rn
+        FROM $input1 AS t
     ) AS x
-    WHERE x.rn == 1
+    WHERE x._dedup_rn == 1
 );
 
 $i2 = (
-    SELECT x.* WITHOUT x.rn
+    SELECT x.* WITHOUT x._dedup_rn
     FROM (
-        SELECT k.*, ROW_NUMBER() OVER w AS rn
-        FROM $i2_keyed AS k
-        WINDOW w AS (
-            PARTITION BY k.instruct_id, k.pair_key
-            ORDER BY $dst_len(k.dst) DESC, $dst_str(k.dst)
-        )
+        SELECT
+            t.*,
+            ROW_NUMBER() OVER (
+                PARTITION BY t.instruct_id, t.source_A, t.source_B
+                ORDER BY LENGTH(COALESCE(CAST(t.dst AS String), '')) DESC,
+                         COALESCE(CAST(t.dst AS String), '')
+            ) AS _dedup_rn
+        FROM $input2 AS t
     ) AS x
-    WHERE x.rn == 1
+    WHERE x._dedup_rn == 1
 );
 
 -- ========================= ЗВЁЗДЫ =========================
@@ -284,8 +251,14 @@ $as_source = ($w, $s1, $s2) -> {
 };
 
 -- ========================= РАЗБОР =========================
--- Джойн по паре целиком: instruct_id + ключ моделей. Оба входа уже без повторов,
+-- Джойн по паре целиком: задание + обе модели. Оба входа уже без повторов,
 -- поэтому соответствие строго один-к-одному — дублей на выходе не будет.
+--
+-- Если модели в таблице названы иначе (в judge_merge_pretty.sql это
+-- answer_source_1 / answer_source_2) — поменяй имена здесь и в двух PARTITION BY
+-- выше. Если выход вдруг окажется пустым, значит в обратной таблице сорсы
+-- переставлены местами: тогда джойнить надо по паре без учёта порядка,
+-- IF(source_A <= source_B, source_A || source_B, source_B || source_A).
 $parsed = (
     SELECT
         i1.*,
@@ -293,7 +266,7 @@ $parsed = (
         $process_json(CAST(i2.dst AS String)) AS rev_yson
     FROM $i1 AS i1
     INNER JOIN $i2 AS i2
-    USING (instruct_id, pair_key)
+    USING (instruct_id, source_A, source_B)
 );
 
 $calc = (
@@ -379,7 +352,7 @@ SELECT
     -- только что пересчитали: они уже есть во входной таблице с прошлых
     -- этапов, и без снятия YQL падает с «Duplicated member».
     f.* WITHOUT IF EXISTS
-        f.dir_yson, f.rev_yson, f.pass_order, f.pair_key,
+        f.dir_yson, f.rev_yson, f.pass_order,
         f.mk1_dir, f.mk2_dir, f.mk1_rev, f.mk2_rev,
         f.w_direct, f.w_reversed_norm,
         f.dst, f.reasoning_dst, f.infer_dialog, f.tov_prompt, f._other,

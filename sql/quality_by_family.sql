@@ -8,7 +8,12 @@ DECLARE $output1 AS String;
 -- Качество вердикта в разрезе семейств моделей.
 --
 -- Вход — таблица после склейки второго этапа: разметка из пула (winner,
--- answer_source_1, answer_source_2) плюс вердикт джаджа (tov_winner).
+-- answer_source_1, answer_source_2, family_1, family_2) плюс вердикт джаджа
+-- (tov_winner).
+--
+-- Разбивка идёт по family_1 / family_2, имена моделей ни на что не влияют.
+-- Строки с разными семействами в паре получают ярлык 'A + B' и в бакеты
+-- отдельных семейств не попадают.
 --
 -- golden = winner     (имя модели-победителя из разметки)
 -- model  = tov_winner (то, что поставил джадж: model_1 / model_2 / tie / conflict)
@@ -64,38 +69,27 @@ def norm_side(w, s1, s2):
 @@
 );
 
--- Семейство определяем по именам сорсов, а не по колонкам family_1 / family_2:
--- здесь нужна ровно эта разбивка (vlm / neuro / остальное), а во входных
--- family_* лежит своя классификация, и смешивать их — потерять сопоставимость
--- с прошлыми замерами.
-$row_family = Python3::row_family(
-    Callable<(Utf8?, Utf8?)->Utf8>,
-@@
-import re
+-- Семейство берём из колонок family_1 / family_2 как есть — никаких списков
+-- имён моделей. Новая модель в пуле попадает в свой бакет сама, без правки
+-- запроса; раньше её пришлось бы дописывать в регулярку руками.
+$fam = ($v) -> {
+    $s = COALESCE(CAST($v AS String), '');
+    RETURN IF($s == '', 'unknown', $s);
+};
 
-def _is_vlm(t):
-    return bool(re.search(r"32b_yavlm|alicevlm", t) or t.startswith("v7"))
-
-def _is_neuro(t):
-    return bool(
-        re.search(r"neuro|mandarin", t)
-        or t.startswith("nap_")
-        or t.startswith("sft_rewrite")
-        or t.startswith("grpo_")
-        or t.startswith("tov_sft")
-        or t.startswith("одуванчик")
-    )
-
-def row_family(s1, s2):
-    a = str(s1 or "").strip().lower()
-    b = str(s2 or "").strip().lower()
-    if _is_vlm(a) or _is_vlm(b):
-        return "vlm"
-    if _is_neuro(a) or _is_neuro(b):
-        return "neuro"
-    return "other"
-@@
-);
+-- Пара может быть внутри одного семейства и между разными. Одинаковые —
+-- это и есть семейство строки. Разные склеиваем в один ярлык, отсортировав
+-- по алфавиту: так 'neuro + vlm' и 'vlm + neuro' попадают в один бакет, и ни
+-- одна строка не приписывается семейству, которым она наполовину.
+$pair_family = ($f1, $f2) -> {
+    $a = $fam($f1);
+    $b = $fam($f2);
+    RETURN CASE
+        WHEN $a == $b   THEN $a
+        WHEN $a <= $b   THEN $a || ' + ' || $b
+        ELSE                 $b || ' + ' || $a
+    END;
+};
 
 $score_half = ($golden, $model) -> {
     RETURN CASE
@@ -125,10 +119,7 @@ $ratio = ($sum, $cnt) -> {
 
 $sided = (
     SELECT
-        $row_family(
-            CAST(answer_source_1 AS Utf8?),
-            CAST(answer_source_2 AS Utf8?)
-        ) AS family,
+        $pair_family(family_1, family_2) AS family,
         $norm_side(
             CAST(winner AS Utf8?),
             CAST(answer_source_1 AS Utf8?),
@@ -179,11 +170,10 @@ $by_family = (
         COUNT_IF(model_side == 'unknown')   AS skipped_model,
         COUNT_IF(golden_side == 'unknown')  AS skipped_golden
     FROM $scored
-    WHERE family != 'other'
     GROUP BY family
 );
 
--- 'all' считаем по всем строкам, включая family == 'other'.
+-- 'all' — те же строки без разбивки, для сверки итога.
 $total = (
     SELECT
         'all'                               AS family,

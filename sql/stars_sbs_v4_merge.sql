@@ -8,6 +8,9 @@ PRAGMA yt.InferSchema = '2';
 DECLARE $input1 AS String;
 DECLARE $input2 AS String;
 DECLARE $output1 AS String;
+DECLARE $output2 AS String;
+
+$yson_null = Just(Yson::From({}));
 
 -- Склейка прямого и обратного прохода второго этапа (v4: аудит + SbS).
 --
@@ -178,6 +181,33 @@ $marker_agreement = ($d_mk, $r_mk) -> {
     })) AS Double) / CAST(ListLength($marker_names) AS Double);
 };
 
+-- Разметочные чекбоксы из словаря маркеров. Имена слева — интерфейс разметки,
+-- менять их нельзя; справа — маркеры v4. tov_plus_clarity в этом списке нет:
+-- в v4 ясность живёт в звёздах (clc_metrics), а не в маркерах.
+-- Сигнатура как у $markers: два прохода, объединение по ИЛИ. Для чекбоксов
+-- одного прохода передаём его же дважды.
+$cb = ($d_mk, $r_mk, $n) -> {
+    RETURN $is_on($d_mk, $n) OR $is_on($r_mk, $n);
+};
+
+$markers_to_checkboxes = ($d_mk, $r_mk) -> {
+    RETURN Just(Yson::From(<|
+        point_bad_intro:              $cb($d_mk, $r_mk, 'bad_intro'),
+        point_bad_proactivity:        $cb($d_mk, $r_mk, 'bad_proactivity'),
+        tov_minus_addressing:         $cb($d_mk, $r_mk, 'inconsistency'),
+        tov_minus_boundary_violation: $cb($d_mk, $r_mk, 'boundaries_violation'),
+        tov_minus_cliches:            $cb($d_mk, $r_mk, 'template_phrases'),
+        tov_minus_dry:                $cb($d_mk, $r_mk, 'stuffy_bureaucratic'),
+        tov_minus_language_errors:    $cb($d_mk, $r_mk, 'language_errors'),
+        tov_minus_overemotional:      $cb($d_mk, $r_mk, 'over_emotional'),
+        tov_plus_empathy:             $cb($d_mk, $r_mk, 'empathy'),
+        tov_plus_humor:               $cb($d_mk, $r_mk, 'humor_metaphors'),
+        tov_plus_subject:             $cb($d_mk, $r_mk, 'subjectivity'),
+        tov_plus_tone_match:          $cb($d_mk, $r_mk, 'tone_match'),
+        tov_tone_unacceptable:        $cb($d_mk, $r_mk, 'critical_tone')
+    |>));
+};
+
 -- ========================= ВЕРДИКТ =========================
 $verdict = ($node) -> {
     RETURN Yson::LookupString(Yson::Lookup($node, 'sbs_comparison'), 'verdict') ?? 'tie';
@@ -202,6 +232,17 @@ $as_source = ($w, $s1, $s2) -> {
         WHEN 'model_1' THEN COALESCE(CAST($s1 AS String), 'model_1')
         WHEN 'model_2' THEN COALESCE(CAST($s2 AS String), 'model_2')
         ELSE COALESCE($w, 'tie')
+    END;
+};
+
+-- В формате разметки поле winner знает только имя сорса или 'draw' —
+-- 'tie' и 'conflict' туда не пролезут, поэтому для второго выхода отдельная
+-- обёртка. В рабочей таблице (выход 1) они остаются как есть.
+$winner_source = ($w, $s1, $s2) -> {
+    RETURN CASE $w
+        WHEN 'model_1' THEN COALESCE(CAST($s1 AS String), '')
+        WHEN 'model_2' THEN COALESCE(CAST($s2 AS String), '')
+        ELSE 'draw'
     END;
 };
 
@@ -251,6 +292,7 @@ $final = (
     FROM $calc AS c
 );
 
+-- ========================= ВЫХОД 1: рабочая таблица =========================
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
     -- ---------- звёзды ----------
@@ -314,4 +356,115 @@ SELECT
         f.markers_1_list, f.markers_2_list,
         f.markers_1_agreement, f.markers_2_agreement,
         f.sbs, f.tov_winner_source, f.meta_info
+FROM $final AS f;
+
+-- ========================= ВЫХОД 2: формат разметки =========================
+-- task_id — for_join: он единственный ключ, который едет из исходника до конца
+-- неизменным, по нему же разметку потом класть обратно.
+INSERT INTO $output2 WITH TRUNCATE
+SELECT
+    f.for_join     AS for_join,
+    f.instruct_id  AS instruct_id,
+
+    Just(Yson::From(<|
+        task_id:    COALESCE(CAST(f.for_join AS String), ''),
+        pool_id:    $yson_null,
+        project_id: $yson_null,
+        answer_A:   COALESCE(CAST(f.answer_1 AS String), ''),
+        answer_B:   COALESCE(CAST(f.answer_2 AS String), ''),
+        source_A:   COALESCE(CAST(f.answer_source_1 AS String), ''),
+        source_B:   COALESCE(CAST(f.answer_source_2 AS String), ''),
+        checkboxes: Just(Yson::From(<||>)),
+        markers:    Just(Yson::From(AsList())),
+
+        raw_outputs: AsList(
+            <|
+                worker_id:       'direct',
+                assignment_id:   $yson_null,
+                annotations:     Just(Yson::From(AsList())),
+                checkboxes_A:    $markers_to_checkboxes(f.mk1_dir, f.mk1_dir),
+                checkboxes_B:    $markers_to_checkboxes(f.mk2_dir, f.mk2_dir),
+                clc_metrics_A:   $clc(f.dir_yson, f.dir_yson, 'model_1_evaluation', 'model_1_evaluation'),
+                clc_metrics_B:   $clc(f.dir_yson, f.dir_yson, 'model_2_evaluation', 'model_2_evaluation'),
+                comment_A:       $yson_null,
+                comment_B:       $yson_null,
+                general_comment: $sbs_why(f.dir_yson),
+                comment_judge:   $yson_null,
+                diff_pa:         $yson_null,
+                diff_pa_winner:  $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2),
+                direct_speech_A: $yson_null,
+                direct_speech_B: $yson_null,
+                markup_dt:       $yson_null,
+                skip:            $yson_null,
+                winner:          $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2)
+            |>,
+            -- обратный проход уже нормализован: mk1_rev — это разметка answer_1,
+            -- то есть model_2_markers_review сырого ответа. Ставить сюда
+            -- model_1 нельзя, A и B поменяются местами
+            <|
+                worker_id:       'reverse',
+                assignment_id:   $yson_null,
+                annotations:     Just(Yson::From(AsList())),
+                checkboxes_A:    $markers_to_checkboxes(f.mk1_rev, f.mk1_rev),
+                checkboxes_B:    $markers_to_checkboxes(f.mk2_rev, f.mk2_rev),
+                clc_metrics_A:   $clc(f.rev_yson, f.rev_yson, 'model_2_evaluation', 'model_2_evaluation'),
+                clc_metrics_B:   $clc(f.rev_yson, f.rev_yson, 'model_1_evaluation', 'model_1_evaluation'),
+                comment_A:       $yson_null,
+                comment_B:       $yson_null,
+                general_comment: $sbs_why(f.rev_yson),
+                comment_judge:   $yson_null,
+                diff_pa:         $yson_null,
+                diff_pa_winner:  $winner_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2),
+                direct_speech_A: $yson_null,
+                direct_speech_B: $yson_null,
+                markup_dt:       $yson_null,
+                skip:            $yson_null,
+                winner:          $winner_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2)
+            |>
+        )
+    |>)) AS raw_tov_markup,
+
+    Just(Yson::From(<|
+        task_id:    COALESCE(CAST(f.for_join AS String), ''),
+        pool_id:    $yson_null,
+        project_id: $yson_null,
+        worker_ids: AsList('direct', 'reverse'),
+
+        answer_A:   COALESCE(CAST(f.answer_1 AS String), ''),
+        answer_B:   COALESCE(CAST(f.answer_2 AS String), ''),
+        source_A:   COALESCE(CAST(f.answer_source_1 AS String), ''),
+        source_B:   COALESCE(CAST(f.answer_source_2 AS String), ''),
+
+        -- сводные чекбоксы: маркер стоит, если его увидел хотя бы один проход
+        checkboxes_A: $markers_to_checkboxes(f.mk1_dir, f.mk1_rev),
+        checkboxes_B: $markers_to_checkboxes(f.mk2_dir, f.mk2_rev),
+
+        clc_metrics_A: $clc(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation'),
+        clc_metrics_B: $clc(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation'),
+
+        markers_A: $marker_list(f.mk1_dir, f.mk1_rev),
+        markers_B: $marker_list(f.mk2_dir, f.mk2_rev),
+
+        annotations:      AsList(AsList(), AsList()),
+        comments_A:       AsList('', ''),
+        comments_B:       AsList('', ''),
+        general_comments: AsList($sbs_why(f.dir_yson), $sbs_why(f.rev_yson)),
+
+        task_summarization: $yson_null,
+
+        diff_pa:                  false,
+        diff_pa_winner:           $winner_source(f.tov_winner, f.answer_source_1, f.answer_source_2),
+        diff_pa_winner_agreement: IF(f.w_direct = f.w_reversed_norm, 1.0, 0.0),
+        diff_pa_winner_strength:  IF(f.w_direct = f.w_reversed_norm, 'strong', 'weak'),
+
+        direct_speech_A: false,
+        direct_speech_B: false,
+
+        winner:           $winner_source(f.tov_winner, f.answer_source_1, f.answer_source_2),
+        winner_agreement: IF(f.w_direct = f.w_reversed_norm, 1.0, 0.0),
+        winner_strength:  IF(f.w_direct = f.w_reversed_norm, 'strong', 'weak'),
+
+        skip: false
+    |>)) AS agg_tov_markup
+
 FROM $final AS f;

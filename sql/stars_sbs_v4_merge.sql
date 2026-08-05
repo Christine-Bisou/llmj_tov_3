@@ -26,7 +26,12 @@ $yson_null = Just(Yson::From({}));
 --                               по проходам и усреднением;
 --   markers_1 / markers_2     — словарь 13 маркеров после аудита, с пометкой,
 --                               в каком проходе маркер сработал;
---   sbs                       — вердикт с обоих проходов, сразу в сорсах.
+--   sbs                       — вердикт сразу в сорсах, с обоими проходами
+--                               для справки.
+--
+-- Победителя здесь не выводим: tov_winner приезжает готовой колонкой и просто
+-- пробрасывается дальше. Вердикты отдельных проходов разбираются только ради
+-- agreement / strength — по ним видно, разошлись ли проходы между собой.
 
 $script = @@#py
 import json
@@ -259,6 +264,14 @@ $parsed = (
 
 $calc = (
     SELECT
+        -- Победителя не выводим: вердикт приезжает готовой колонкой tov_winner,
+        -- здесь только приводим её к String. Алиас поверх p.* требует снять
+        -- исходную колонку, иначе «Duplicated member». Звёздочка с WITHOUT —
+        -- строго последняя в списке: после неё парсер ждёт только имена колонок.
+        CAST(p.tov_winner AS String)  AS tov_winner,
+
+        -- вердикты по проходам оставлены как диагностика: по ним считаются
+        -- agreement и strength, и по ним видно, разошлись ли проходы
         $verdict(dir_yson)          AS w_direct,
         $flip($verdict(rev_yson))   AS w_reversed_norm,
 
@@ -268,26 +281,8 @@ $calc = (
         $mk(rev_yson, 'model_2_markers_review') AS mk1_rev,
         $mk(rev_yson, 'model_1_markers_review') AS mk2_rev,
 
-        -- tov_winner мог остаться от прошлых склеек: снимаем, иначе алиас ниже
-        -- упрётся в «Duplicated member». Звёздочка с WITHOUT — строго последняя
-        -- в списке: после неё парсер ждёт только имена колонок.
         p.* WITHOUT IF EXISTS p.tov_winner
     FROM $parsed AS p
-);
-
-$final = (
-    SELECT
-        c.*,
-        CASE
-            WHEN w_direct = w_reversed_norm            THEN w_direct
-            WHEN w_direct IN ('tie', 'draw')           THEN w_reversed_norm
-            WHEN w_reversed_norm IN ('tie', 'draw')    THEN w_direct
-            -- проходы назвали разных победителей — ничья.
-            -- Что это было именно несогласие, а не честная ничья, видно по
-            -- agreement / strength в sbs и meta_info
-            ELSE 'draw'
-        END AS tov_winner
-    FROM $calc AS c
 );
 
 -- ========================= ВЫХОД 1: рабочая таблица =========================
@@ -354,7 +349,7 @@ SELECT
         f.markers_1_list, f.markers_2_list,
         f.markers_1_agreement, f.markers_2_agreement,
         f.sbs, f.tov_winner_source, f.meta_info
-FROM $final AS f;
+FROM $calc AS f;
 
 -- ========================= ВЫХОД 2: формат разметки =========================
 -- task_id — for_join: он единственный ключ, который едет из исходника до конца
@@ -465,4 +460,4 @@ SELECT
         skip: false
     |>)) AS agg_tov_markup
 
-FROM $final AS f;
+FROM $calc AS f;

@@ -34,16 +34,26 @@ $winner_source = ($w, $sa, $sb) -> {
     END;
 };
 
--- Yson-диалог в List<Struct<content:Utf8, role:Utf8>>.
--- Разбираем поштучно, а не Yson::ConvertTo целиком: в разметочных диалогах
--- у сообщений бывают лишние поля, на них строгая конверсия падает
+-- Диалог во второй таблице лежит ходами: [{query, answer}, ...], причём
+-- у последнего хода answer нет. Разворачиваем каждый ход в пару сообщений
+-- query -> user, answer -> assistant и выкидываем пустые
+$msg = ($m, $key, $role) -> {
+    RETURN AsStruct(
+        CAST(Yson::ConvertToString(Yson::Lookup($m, $key)) AS Utf8) ?? ""u AS content,
+        $role                                                          AS role
+    );
+};
+
 $dialog = ($y) -> {
-    RETURN ListMap(
+    RETURN ListFlatMap(
         Yson::ConvertToList($y),
         ($m) -> {
-            RETURN AsStruct(
-                CAST(Yson::ConvertToString(Yson::Lookup($m, "content")) AS Utf8) ?? ""u AS content,
-                CAST(Yson::ConvertToString(Yson::Lookup($m, "role"))    AS Utf8) ?? ""u AS role
+            RETURN ListFilter(
+                AsList(
+                    $msg($m, "query",  "user"u),
+                    $msg($m, "answer", "assistant"u)
+                ),
+                ($x) -> { RETURN $x.content != ""u; }
             );
         }
     );

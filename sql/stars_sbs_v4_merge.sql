@@ -7,7 +7,6 @@ PRAGMA yt.InferSchema = '2';
 
 DECLARE $input1 AS String;   -- прямой прогон второго этапа
 DECLARE $input2 AS String;   -- обратный прогон второго этапа
-DECLARE $input3 AS String;   -- исходная таблица: for_join, готовый tov_winner
 DECLARE $output1 AS String;
 DECLARE $output2 AS String;
 
@@ -30,9 +29,8 @@ $yson_null = Just(Yson::From({}));
 --   sbs                       — вердикт сразу в сорсах, с обоими проходами
 --                               для справки.
 --
--- Победителя здесь не выводим: tov_winner берём из $input3 (исходная таблица)
--- и пробрасываем дальше. Вердикты отдельных проходов разбираются только ради
--- agreement / strength — по ним видно, разошлись ли проходы между собой.
+-- tov_winner сводится из вердиктов двух проходов; колонка с тем же именем,
+-- доехавшая с прошлых склеек, снимается.
 
 $script = @@#py
 import json
@@ -239,6 +237,29 @@ $as_source = ($w, $s1, $s2) -> {
     END;
 };
 
+-- Согласованность проходов — три состояния, а не два:
+--   1.0 — оба назвали одного победителя (или оба сказали ничью);
+--   0.5 — один назвал победителя, второй ничью: не спорят, просто один
+--         проход осторожнее;
+--   0.0 — назвали РАЗНЫХ победителей, то есть прямое противоречие.
+-- Мешать 0.5 и 0.0 в одно «не сошлись» нельзя: это разные вещи, и именно
+-- нули стоит смотреть руками.
+$agreement = ($d, $r) -> {
+    RETURN CASE
+        WHEN $d = $r                                             THEN 1.0
+        WHEN $d IN ('tie', 'draw') OR $r IN ('tie', 'draw')      THEN 0.5
+        ELSE 0.0
+    END;
+};
+
+$strength = ($d, $r) -> {
+    RETURN CASE
+        WHEN $d = $r                                             THEN 'strong'
+        WHEN $d IN ('tie', 'draw') OR $r IN ('tie', 'draw')      THEN 'weak'
+        ELSE 'conflict'
+    END;
+};
+
 -- В формате разметки поле winner знает только имя сорса или 'draw', и пустую
 -- строку вместо отсутствующего сорса — отсюда отдельная обёртка.
 $winner_source = ($w, $s1, $s2) -> {
@@ -250,43 +271,21 @@ $winner_source = ($w, $s1, $s2) -> {
 };
 
 -- ========================= РАЗБОР =========================
--- Из исходника берём только то, что не должен был трогать ни один этап
--- конвейера. Тащить оттуда t.* нельзя: почти все колонки уже приехали с
--- i1.*, и SimpleColumns упрётся в «Duplicated member». Нужно ещё поле —
--- дописывается сюда одной строкой и снимается ниже в WITHOUT.
-$src = (
-    SELECT
-        for_join                    AS for_join,
-        CAST(tov_winner AS String)  AS src_tov_winner
-    FROM $input3
-);
-
 -- Склейка по for_join: instruct_id по дороге переставал быть сквозным ключом
 -- (на этапах разбора это просто нумерация строк таблицы), for_join же едет
 -- из исходника неизменным и уникален в каждом прогоне.
 $parsed = (
     SELECT
         i1.*,
-        s.src_tov_winner                      AS src_tov_winner,
         $process_json(CAST(i1.dst AS String)) AS dir_yson,
         $process_json(CAST(i2.dst AS String)) AS rev_yson
     FROM $input1 AS i1
     INNER JOIN $input2 AS i2
     USING (for_join)
-    LEFT JOIN $src AS s
-    USING (for_join)
 );
 
 $calc = (
     SELECT
-        -- Победителя не выводим: вердикт берём готовым из исходной таблицы.
-        -- Алиас поверх p.* требует снять одноимённую колонку, иначе
-        -- «Duplicated member». Звёздочка с WITHOUT — строго последняя
-        -- в списке: после неё парсер ждёт только имена колонок.
-        p.src_tov_winner            AS tov_winner,
-
-        -- вердикты по проходам оставлены как диагностика: по ним считаются
-        -- agreement и strength, и по ним видно, разошлись ли проходы
         $verdict(dir_yson)          AS w_direct,
         $flip($verdict(rev_yson))   AS w_reversed_norm,
 
@@ -296,8 +295,26 @@ $calc = (
         $mk(rev_yson, 'model_2_markers_review') AS mk1_rev,
         $mk(rev_yson, 'model_1_markers_review') AS mk2_rev,
 
-        p.* WITHOUT IF EXISTS p.tov_winner, p.src_tov_winner
+        -- tov_winner мог остаться от прошлых склеек: снимаем, иначе алиас ниже
+        -- упрётся в «Duplicated member». Звёздочка с WITHOUT — строго последняя
+        -- в списке: после неё парсер ждёт только имена колонок.
+        p.* WITHOUT IF EXISTS p.tov_winner
     FROM $parsed AS p
+);
+
+$final = (
+    SELECT
+        c.*,
+        CASE
+            WHEN w_direct = w_reversed_norm            THEN w_direct
+            WHEN w_direct IN ('tie', 'draw')           THEN w_reversed_norm
+            WHEN w_reversed_norm IN ('tie', 'draw')    THEN w_direct
+            -- проходы назвали разных победителей — ничья.
+            -- Что это было именно противоречие, а не честная ничья, видно
+            -- по agreement: там 0.0, а не 0.5
+            ELSE 'draw'
+        END AS tov_winner
+    FROM $calc AS c
 );
 
 -- ========================= ВЫХОД 1: рабочая таблица =========================
@@ -325,8 +342,8 @@ SELECT
         winner_model:      f.tov_winner,
         direct:            $as_source(f.w_direct, f.answer_source_1, f.answer_source_2),
         reversed:          $as_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2),
-        agreement:         IF(f.w_direct = f.w_reversed_norm, 1.0, 0.0),
-        strength:          IF(f.w_direct = f.w_reversed_norm, 'strong', 'weak'),
+        agreement:         $agreement(f.w_direct, f.w_reversed_norm),
+        strength:          $strength(f.w_direct, f.w_reversed_norm),
         reasoning_direct:  $sbs_why(f.dir_yson),
         reasoning_reversed: $sbs_why(f.rev_yson)
     |>))                                     AS sbs,
@@ -364,7 +381,7 @@ SELECT
         f.markers_1_list, f.markers_2_list,
         f.markers_1_agreement, f.markers_2_agreement,
         f.sbs, f.tov_winner_source, f.meta_info
-FROM $calc AS f;
+FROM $final AS f;
 
 -- ========================= ВЫХОД 2: формат разметки =========================
 -- task_id — for_join: он единственный ключ, который едет из исходника до конца
@@ -462,17 +479,17 @@ SELECT
 
         diff_pa:                  false,
         diff_pa_winner:           $winner_source(f.tov_winner, f.answer_source_1, f.answer_source_2),
-        diff_pa_winner_agreement: IF(f.w_direct = f.w_reversed_norm, 1.0, 0.0),
-        diff_pa_winner_strength:  IF(f.w_direct = f.w_reversed_norm, 'strong', 'weak'),
+        diff_pa_winner_agreement: $agreement(f.w_direct, f.w_reversed_norm),
+        diff_pa_winner_strength:  $strength(f.w_direct, f.w_reversed_norm),
 
         direct_speech_A: false,
         direct_speech_B: false,
 
         winner:           $winner_source(f.tov_winner, f.answer_source_1, f.answer_source_2),
-        winner_agreement: IF(f.w_direct = f.w_reversed_norm, 1.0, 0.0),
-        winner_strength:  IF(f.w_direct = f.w_reversed_norm, 'strong', 'weak'),
+        winner_agreement: $agreement(f.w_direct, f.w_reversed_norm),
+        winner_strength:  $strength(f.w_direct, f.w_reversed_norm),
 
         skip: false
     |>)) AS agg_tov_markup
 
-FROM $calc AS f;
+FROM $final AS f;

@@ -141,12 +141,23 @@ $fallback_dialog = CAST(@@[
   }
 ]@@ AS Utf8);
 
--- В таблице разметки dialog лежит ТЕКСТОМ с JSON внутри, а не структурой.
+-- Все колонки этой таблицы приезжают как Optional<Yson> (схема any),
+-- поэтому значения достаём через Yson::ConvertToString: CAST(... AS String)
+-- вернул бы сырые yson-байты со служебными маркерами, а CAST(... AS Utf8)
+-- вообще не компилируется.
+
+-- В разметке dialog лежит ТЕКСТОМ с JSON внутри, а не структурой.
 -- Поэтому Yson::From(dialog) заворачивал его в JSON-строку с кавычками:
 -- ниже по пайплайну json.loads возвращал str вместо списка реплик,
--- и диалог приезжал пустым. Здесь текст разбираем явно.
+-- и диалог приезжал пустым. Здесь разбираем оба варианта:
+-- yson-строку с JSON и уже готовый список реплик.
 $dialog_text = ($raw) -> {
-    $t = String::Strip(COALESCE(CAST($raw AS String), ''));
+    $s = COALESCE(
+        Yson::ConvertToString($raw),                 -- строка с JSON внутри
+        Yson::SerializeJson(Yson::Parse($raw)),      -- уже структура
+        ''
+    );
+    $t = String::Strip($s);
     -- пустым считаем и NULL, и '', и текстовые 'null' / '[]'
     RETURN IF($t IN ('', 'null', 'NULL', 'Null', '[]', '{}'),
               $fallback_dialog,
@@ -161,19 +172,17 @@ $dialog_struct = ($json) -> {
     );
 };
 
--- '⭐⭐⭐' -> 3, пустая ячейка -> NULL (считаем вхождения, а не длину:
--- у части оценок к звезде приклеен вариационный селектор U+FE0F)
+-- '⭐⭐⭐' -> 3, пустая ячейка -> NULL. Считаем вхождения звезды, а не длину:
+-- у части оценок к звезде приклеен вариационный селектор U+FE0F.
 $stars = ($v) -> {
-    $t = COALESCE(CAST($v AS String), '');
-    RETURN NULLIF(
-        CAST((LENGTH($t) - LENGTH(String::ReplaceAll($t, '⭐', ''))) / LENGTH('⭐') AS Int32),
-        0
-    );
+    $t = COALESCE(Yson::ConvertToString($v), '');
+    $cnt = (LENGTH($t) - LENGTH(String::ReplaceAll($t, '⭐', ''))) / LENGTH('⭐');
+    RETURN IF($cnt > 0, Just(COALESCE(CAST($cnt AS Int32), 0)), Nothing(Int32?));
 };
 
 -- SbS в словарь пайплайна: 'A' -> model_1 (answer_a), 'B' -> model_2 (answer_b)
 $verdict = ($v) -> {
-    $t = String::AsciiToUpper(String::Strip(COALESCE(CAST($v AS String), '')));
+    $t = String::AsciiToUpper(String::Strip(COALESCE(Yson::ConvertToString($v), '')));
     RETURN CASE
         WHEN $t IN ('A', 'MODEL_1') THEN 'model_1'
         WHEN $t IN ('B', 'MODEL_2') THEN 'model_2'
@@ -183,20 +192,21 @@ $verdict = ($v) -> {
 
 -- пустые ячейки не тащим как '' — пусть будет NULL
 $cell = ($v) -> {
-    RETURN CAST(NULLIF(String::Strip(COALESCE(CAST($v AS String), '')), '') AS Utf8);
+    $t = String::Strip(COALESCE(Yson::ConvertToString($v), ''));
+    RETURN IF($t = '', Nothing(Utf8?), CAST($t AS Utf8));
 };
 
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
-    CAST(t.`Ссылка` AS Utf8)        AS link,
+    $cell(t.`Ссылка`)               AS link,
 
     $dialog_struct($dialog_text(t.dialog)) AS dialog,      -- список реплик
     $dialog_text(t.dialog)                 AS dialog_str,  -- он же текстом, на всякий случай
 
-    CAST(t.model_a AS Utf8)         AS model_a,
-    CAST(t.answer_a AS Utf8)        AS answer_a,
-    CAST(t.model_b AS Utf8)         AS model_b,
-    CAST(t.answer_b AS Utf8)        AS answer_b,
+    $cell(t.model_a)                AS model_a,
+    $cell(t.answer_a)               AS answer_a,
+    $cell(t.model_b)                AS model_b,
+    $cell(t.answer_b)               AS answer_b,
 
     $stars(t.`Ясность a`)           AS clarity_a,
     $stars(t.`Живость a`)           AS vividness_a,

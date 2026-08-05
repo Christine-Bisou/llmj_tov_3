@@ -5,8 +5,9 @@ PRAGMA yt.UseNativeYtTypes;
 PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '2';
 
-DECLARE $input1 AS String;
-DECLARE $input2 AS String;
+DECLARE $input1 AS String;   -- прямой прогон второго этапа
+DECLARE $input2 AS String;   -- обратный прогон второго этапа
+DECLARE $input3 AS String;   -- исходная таблица: for_join, готовый tov_winner
 DECLARE $output1 AS String;
 DECLARE $output2 AS String;
 
@@ -29,8 +30,8 @@ $yson_null = Just(Yson::From({}));
 --   sbs                       — вердикт сразу в сорсах, с обоими проходами
 --                               для справки.
 --
--- Победителя здесь не выводим: tov_winner приезжает готовой колонкой и просто
--- пробрасывается дальше. Вердикты отдельных проходов разбираются только ради
+-- Победителя здесь не выводим: tov_winner берём из $input3 (исходная таблица)
+-- и пробрасываем дальше. Вердикты отдельных проходов разбираются только ради
 -- agreement / strength — по ним видно, разошлись ли проходы между собой.
 
 $script = @@#py
@@ -249,26 +250,40 @@ $winner_source = ($w, $s1, $s2) -> {
 };
 
 -- ========================= РАЗБОР =========================
+-- Из исходника берём только то, что не должен был трогать ни один этап
+-- конвейера. Тащить оттуда t.* нельзя: почти все колонки уже приехали с
+-- i1.*, и SimpleColumns упрётся в «Duplicated member». Нужно ещё поле —
+-- дописывается сюда одной строкой и снимается ниже в WITHOUT.
+$src = (
+    SELECT
+        for_join                    AS for_join,
+        CAST(tov_winner AS String)  AS src_tov_winner
+    FROM $input3
+);
+
 -- Склейка по for_join: instruct_id по дороге переставал быть сквозным ключом
 -- (на этапах разбора это просто нумерация строк таблицы), for_join же едет
 -- из исходника неизменным и уникален в каждом прогоне.
 $parsed = (
     SELECT
         i1.*,
+        s.src_tov_winner                      AS src_tov_winner,
         $process_json(CAST(i1.dst AS String)) AS dir_yson,
         $process_json(CAST(i2.dst AS String)) AS rev_yson
     FROM $input1 AS i1
     INNER JOIN $input2 AS i2
     USING (for_join)
+    LEFT JOIN $src AS s
+    USING (for_join)
 );
 
 $calc = (
     SELECT
-        -- Победителя не выводим: вердикт приезжает готовой колонкой tov_winner,
-        -- здесь только приводим её к String. Алиас поверх p.* требует снять
-        -- исходную колонку, иначе «Duplicated member». Звёздочка с WITHOUT —
-        -- строго последняя в списке: после неё парсер ждёт только имена колонок.
-        CAST(p.tov_winner AS String)  AS tov_winner,
+        -- Победителя не выводим: вердикт берём готовым из исходной таблицы.
+        -- Алиас поверх p.* требует снять одноимённую колонку, иначе
+        -- «Duplicated member». Звёздочка с WITHOUT — строго последняя
+        -- в списке: после неё парсер ждёт только имена колонок.
+        p.src_tov_winner            AS tov_winner,
 
         -- вердикты по проходам оставлены как диагностика: по ним считаются
         -- agreement и strength, и по ним видно, разошлись ли проходы
@@ -281,7 +296,7 @@ $calc = (
         $mk(rev_yson, 'model_2_markers_review') AS mk1_rev,
         $mk(rev_yson, 'model_1_markers_review') AS mk2_rev,
 
-        p.* WITHOUT IF EXISTS p.tov_winner
+        p.* WITHOUT IF EXISTS p.tov_winner, p.src_tov_winner
     FROM $parsed AS p
 );
 

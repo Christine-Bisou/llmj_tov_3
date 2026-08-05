@@ -411,8 +411,8 @@ SELECT
                 checkboxes_B:    $markers_to_checkboxes(f.mk2_dir, f.mk2_dir),
                 pointwise_A:     $clc(f.dir_yson, f.dir_yson, 'model_1_evaluation', 'model_1_evaluation'),
                 pointwise_B:     $clc(f.dir_yson, f.dir_yson, 'model_2_evaluation', 'model_2_evaluation'),
-                comment_A:       $yson_null,
-                comment_B:       $yson_null,
+                comment_A:       COALESCE(CAST(f.model_1_analysis AS String), ''),
+                comment_B:       COALESCE(CAST(f.model_2_analysis AS String), ''),
                 general_comment: $sbs_why(f.dir_yson),
                 comment_judge:   $yson_null,
                 diff_pa:         $yson_null,
@@ -434,8 +434,8 @@ SELECT
                 checkboxes_B:    $markers_to_checkboxes(f.mk2_rev, f.mk2_rev),
                 pointwise_A:     $clc(f.rev_yson, f.rev_yson, 'model_2_evaluation', 'model_2_evaluation'),
                 pointwise_B:     $clc(f.rev_yson, f.rev_yson, 'model_1_evaluation', 'model_1_evaluation'),
-                comment_A:       $yson_null,
-                comment_B:       $yson_null,
+                comment_A:       COALESCE(CAST(f.model_1_analysis AS String), ''),
+                comment_B:       COALESCE(CAST(f.model_2_analysis AS String), ''),
                 general_comment: $sbs_why(f.rev_yson),
                 comment_judge:   $yson_null,
                 diff_pa:         $yson_null,
@@ -471,8 +471,10 @@ SELECT
         markers_B: $marker_list(f.mk2_dir, f.mk2_rev),
 
         annotations:      AsList(AsList(), AsList()),
-        comments_A:       AsList('', ''),
-        comments_B:       AsList('', ''),
+        -- разбор по ответу один на оба прохода, но список comments_*
+        -- позиционный: по элементу на воркера из worker_ids
+        comments_A:       ListReplicate(COALESCE(CAST(f.model_1_analysis AS String), ''), 2),
+        comments_B:       ListReplicate(COALESCE(CAST(f.model_2_analysis AS String), ''), 2),
         general_comments: AsList($sbs_why(f.dir_yson), $sbs_why(f.rev_yson)),
 
         task_summarization: $yson_null,

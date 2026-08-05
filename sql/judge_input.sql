@@ -6,8 +6,18 @@ PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '1';
 
 DECLARE $tables_list AS List<String>;
-DECLARE $out_table AS String;
+DECLARE $output1 AS String;
+DECLARE $output2 AS String;
 
+-- Вход прежний (одна строка = пара), выходов два:
+--   $output1 — infer_dialog собран по answer_1,
+--   $output2 — infer_dialog собран по answer_2.
+-- Строки в обеих таблицах один к одному, набор колонок тоже одинаковый:
+-- отличается только содержимое infer_dialog. Колонка answer_slot проставлена
+-- константой, чтобы таблицы не путались местами.
+--
+-- В промт уходит РОВНО ОДИН ответ, поэтому prompt_template.txt должен быть
+-- поинтвайзным: одна плейсхолдер-переменная {{model_answer}} вместо двух.
 $template = cast(FileContent("prompt_template.txt") as Utf8);
 
 $script = @@#py
@@ -98,9 +108,11 @@ def replace_alice(text: Optional[Utf8]) -> Optional[Utf8]:
 def build_judge_input(
     dialog_json: Optional[Utf8],
     template: Optional[Utf8],
-    answer_1: Optional[Utf8],
-    answer_2: Optional[Utf8],
+    answer: Optional[Utf8],
 ) -> Optional[Utf8]:
+    """Собирает вход джаджа для ОДНОГО ответа.
+    Второй ответ пары сюда не попадает намеренно: оценка должна быть
+    абсолютной, без опоры на альтернативу и без позиционного эффекта."""
     MAX_MESSAGES = 5
 
     try:
@@ -128,8 +140,7 @@ def build_judge_input(
     context_with_query = '\n\n'.join(dialog_lines)
     rendered = Template(str(template or '')).render(
         context_with_query=context_with_query,
-        model_1_answer=_replace_alice(answer_1),
-        model_2_answer=_replace_alice(answer_2),
+        model_answer=_replace_alice(answer),
     )
 
     if not image_urls:
@@ -157,17 +168,33 @@ def build_judge_input(
 
 $build_judge_input = Python3::build_judge_input($script);
 
-INSERT INTO $out_table
+-- ===================== ВЫХОД 1: первый ответ пары =====================
+INSERT INTO $output1 WITH TRUNCATE
 SELECT
+  1 AS answer_slot,
   Yson::ParseJson(
     $build_judge_input(
       Yson::SerializeJson(Yson::From(t.dialog)),
       $template,
-      cast(t.answer_1 as Utf8),
-      cast(t.answer_2 as Utf8)
+      cast(t.answer_1 as Utf8)
     )
   ) AS infer_dialog,
 
   -- WITHOUT обязан быть последним элементом списка, иначе YQL ругается
-  t.* WITHOUT IF EXISTS t.tov_prompt, t._other, t.infer_dialog
+  t.* WITHOUT IF EXISTS t.answer_slot, t.tov_prompt, t._other, t.infer_dialog
+FROM Each($tables_list) AS t;
+
+-- ===================== ВЫХОД 2: второй ответ пары =====================
+INSERT INTO $output2 WITH TRUNCATE
+SELECT
+  2 AS answer_slot,
+  Yson::ParseJson(
+    $build_judge_input(
+      Yson::SerializeJson(Yson::From(t.dialog)),
+      $template,
+      cast(t.answer_2 as Utf8)
+    )
+  ) AS infer_dialog,
+
+  t.* WITHOUT IF EXISTS t.answer_slot, t.tov_prompt, t._other, t.infer_dialog
 FROM Each($tables_list) AS t;

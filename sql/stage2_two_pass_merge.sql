@@ -12,18 +12,21 @@ DECLARE $output1 AS String;
 -- Склейка прямого и обратного прохода второго этапа (v4: аудит + SbS).
 --
 -- $input1 — прямой прогон (answer_1 шёл первым), $input2 — обратный.
--- В обеих таблицах ответ джаджа лежит в dst.
+--
+-- ГДЕ ЛЕЖИТ ОТВЕТ ДЖАДЖА: dst — выход ПЕРВОГО этапа (маркеры),
+-- dst_2 — выход ВТОРОГО (звёзды + аудит + sbs_comparison). Проводка та же,
+-- что в judge_merge_pretty: прямой берём из i1.dst_2, обратный — из i2.dst.
+-- Схемы это подтверждают: в прямой таблице есть dst_2/reasoning_dst_2 и нет dst,
+-- в обратной — наоборот.
 --
 -- ГЛАВНОЕ ПРО РЕВЕРС: в обратном прогоне model_1 — это answer_2, а model_2 —
 -- answer_1. Поэтому везде, где берём значения из обратного прохода для
 -- answer_1, читаем ключ model_2_* — и наоборот. Вердикт зеркалим отдельно.
 --
--- ПРО ДУБЛИ: instruct_id — это ключ ЗАДАНИЯ, а не пары. Один и тот же диалог
--- обычно прогоняется по нескольким парам моделей, поэтому JOIN только по
--- instruct_id даёт декартово произведение: N пар слева на N справа = N*N строк,
--- из которых верны только N. Джойним по паре целиком: instruct_id + обе модели.
--- Плюс каждый вход дедуплицируется до джойна, чтобы повтор строки в одном
--- прогоне не размножил результат.
+-- ПРО ЗАДВОЕНИЕ: instruct_id — ключ ЗАДАНИЯ, а не пары. Одно задание обычно
+-- судится по нескольким парам моделей, поэтому джойн по одному instruct_id даёт
+-- N строк слева на M справа = N*M, из которых верны N. Ключ — задание плюс обе
+-- модели, и каждая сторона до джойна сводится к одной строке на ключ.
 --
 -- Что на выходе:
 --   pointwise_1 / pointwise_2 — звёзды по трём аспектам + общая, с разбивкой
@@ -76,42 +79,89 @@ $marker_names = AsList(
     'boundaries_violation', 'template_phrases', 'language_errors', 'inconsistency'
 );
 
--- ========================= ДЕДУП ВХОДОВ =========================
--- Один прогон обязан давать одну строку на пару моделей. Если строк больше —
--- это перезапуск или двойная заливка, а не данные: лишние снимаем здесь, до
--- джойна, иначе повтор слева умножится на повтор справа.
+-- ========================= КЛЮЧ ПАРЫ =========================
+-- Пустой сорс превращаем в '', иначе NULL != NULL и строка выпадет из джойна.
+-- CAST в String заодно снимает расхождение типов между таблицами.
+$as_key = ($s) -> {
+    RETURN COALESCE(CAST($s AS String), '');
+};
+
+-- Пару держим отсортированной: одни и те же две модели дают одинаковые
+-- src_lo/src_hi независимо от того, в каком порядке записаны в конкретной
+-- таблице. На зеркалирование это не влияет — там порядок задаёт промпт, а не
+-- эти колонки.
+$src_lo = ($a, $b) -> {
+    RETURN IF($as_key($a) <= $as_key($b), $as_key($a), $as_key($b));
+};
+
+$src_hi = ($a, $b) -> {
+    RETURN IF($as_key($a) <= $as_key($b), $as_key($b), $as_key($a));
+};
+
+-- ========================= ВХОДЫ БЕЗ ПОВТОРОВ =========================
+-- Сводим каждую сторону к одной строке на (задание + пара моделей). Это и есть
+-- гарантия против задвоения: одна строка слева против одной справа, INNER JOIN
+-- физически не может размножить.
 --
--- Представителя среди повторов берём по самому длинному dst: обрезанный или
--- пустой ответ джаджа проигрывает полному, а не выигрывает по случайности.
--- Вторым ключом — сама строка, чтобы результат не менялся от запуска к запуску.
+-- Представителя среди повторов берём по самому длинному ответу джаджа:
+-- обрезанный проигрывает полному, а не выигрывает по случайности. Второй ключ
+-- сортировки — сама строка, чтобы результат не менялся от запуска к запуску.
+--
+-- pair_rows_* — сколько строк было на этот ключ до дедупа. Единицы во всём
+-- выходе значат, что схлопывать было нечего. Колонки диагностические.
+$i1_keyed = (
+    SELECT
+        $src_lo(t.source_A, t.source_B)       AS src_lo,
+        $src_hi(t.source_A, t.source_B)       AS src_hi,
+        COALESCE(CAST(t.dst_2 AS String), '') AS _dir_dst,
+        t.* WITHOUT IF EXISTS
+            t.src_lo, t.src_hi, t._dir_dst, t.pair_rows_1, t.pair_rows_2
+    FROM $input1 AS t
+);
+
 $i1 = (
-    SELECT x.* WITHOUT x._dedup_rn
+    SELECT x.* WITHOUT x._rn, x._dir_dst
     FROM (
         SELECT
-            t.*,
-            ROW_NUMBER() OVER (
-                PARTITION BY t.instruct_id, t.source_A, t.source_B
-                ORDER BY LENGTH(COALESCE(CAST(t.dst AS String), '')) DESC,
-                         COALESCE(CAST(t.dst AS String), '')
-            ) AS _dedup_rn
-        FROM $input1 AS t
+            k.*,
+            ROW_NUMBER() OVER w  AS _rn,
+            COUNT(*)     OVER wc AS pair_rows_1
+        FROM $i1_keyed AS k
+        WINDOW
+            -- окно с ORDER BY выбирает представителя,
+            w  AS (PARTITION BY k.instruct_id, k.src_lo, k.src_hi
+                   ORDER BY LENGTH(k._dir_dst) DESC, k._dir_dst),
+            -- а окно без ORDER BY считает по всей группе: с сортировкой COUNT(*)
+            -- стал бы накопительным и на первой строке всегда возвращал единицу
+            wc AS (PARTITION BY k.instruct_id, k.src_lo, k.src_hi)
     ) AS x
-    WHERE x._dedup_rn == 1
+    WHERE x._rn == 1
+);
+
+-- Справа нужны только ключи и ответ второго этапа — остальное берём слева.
+$i2_keyed = (
+    SELECT
+        t.instruct_id                       AS instruct_id,
+        $src_lo(t.source_A, t.source_B)     AS src_lo,
+        $src_hi(t.source_A, t.source_B)     AS src_hi,
+        COALESCE(CAST(t.dst AS String), '') AS rev_dst
+    FROM $input2 AS t
 );
 
 $i2 = (
-    SELECT x.* WITHOUT x._dedup_rn
+    SELECT x.* WITHOUT x._rn
     FROM (
         SELECT
-            t.*,
-            ROW_NUMBER() OVER (
-                PARTITION BY t.instruct_id, t.source_A, t.source_B
-                ORDER BY LENGTH(COALESCE(CAST(t.dst AS String), '')) DESC,
-                         COALESCE(CAST(t.dst AS String), '')
-            ) AS _dedup_rn
-        FROM $input2 AS t
+            k.*,
+            ROW_NUMBER() OVER w  AS _rn,
+            COUNT(*)     OVER wc AS pair_rows_2
+        FROM $i2_keyed AS k
+        WINDOW
+            w  AS (PARTITION BY k.instruct_id, k.src_lo, k.src_hi
+                   ORDER BY LENGTH(k.rev_dst) DESC, k.rev_dst),
+            wc AS (PARTITION BY k.instruct_id, k.src_lo, k.src_hi)
     ) AS x
-    WHERE x._dedup_rn == 1
+    WHERE x._rn == 1
 );
 
 -- ========================= ЗВЁЗДЫ =========================
@@ -240,33 +290,33 @@ $flip = ($v) -> {
 };
 
 -- Победитель сразу сорсом, а не «model_1»: имя модели читается без сверки с таблицей.
+-- В этих таблицах сорсы лежат в колонках source_A / source_B (answer_source_1/2
+-- появляются только после judge_merge_pretty — здесь их нет).
 -- 'tie' и 'conflict' пробрасываем как есть: подменять их на 'tie' нельзя,
 -- иначе несогласие проходов растворится в честных ничьих.
 $as_source = ($w, $s1, $s2) -> {
+    $n1 = COALESCE(CAST($s1 AS String), '');
+    $n2 = COALESCE(CAST($s2 AS String), '');
     RETURN CASE $w
-        WHEN 'model_1' THEN COALESCE(CAST($s1 AS String), 'model_1')
-        WHEN 'model_2' THEN COALESCE(CAST($s2 AS String), 'model_2')
+        WHEN 'model_1' THEN IF($n1 != '', $n1, 'model_1')
+        WHEN 'model_2' THEN IF($n2 != '', $n2, 'model_2')
         ELSE COALESCE($w, 'tie')
     END;
 };
 
 -- ========================= РАЗБОР =========================
--- Джойн по паре целиком: задание + обе модели. Оба входа уже без повторов,
--- поэтому соответствие строго один-к-одному — дублей на выходе не будет.
---
--- Если модели в таблице названы иначе (в judge_merge_pretty.sql это
--- answer_source_1 / answer_source_2) — поменяй имена здесь и в двух PARTITION BY
--- выше. Если выход вдруг окажется пустым, значит в обратной таблице сорсы
--- переставлены местами: тогда джойнить надо по паре без учёта порядка,
--- IF(source_A <= source_B, source_A || source_B, source_B || source_A).
+-- dst_2 — второй этап прямого прогона, dst — второй этап обратного.
+-- Ключ джойна — задание плюс обе модели; обе стороны уже по одной строке
+-- на ключ, поэтому соответствие строго один-к-одному.
 $parsed = (
     SELECT
         i1.*,
-        $process_json(CAST(i1.dst AS String)) AS dir_yson,
-        $process_json(CAST(i2.dst AS String)) AS rev_yson
+        $process_json(CAST(i1.dst_2 AS String)) AS dir_yson,
+        $process_json(i2.rev_dst)               AS rev_yson,
+        i2.pair_rows_2                          AS pair_rows_2
     FROM $i1 AS i1
     INNER JOIN $i2 AS i2
-    USING (instruct_id, source_A, source_B)
+    USING (instruct_id, src_lo, src_hi)
 );
 
 $calc = (
@@ -309,6 +359,18 @@ SELECT
     $clc(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation')       AS clc_metrics_1,
     $clc(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation')       AS clc_metrics_2,
 
+    -- плоские звёзды: в таблицах уже есть clarity_1 / liveliness_1 / connect_1 /
+    -- overall_1 с прошлой склейки, и без пересчёта они разошлись бы с pointwise.
+    -- Старые снимаем в WITHOUT ниже.
+    $star(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation', 'clarity')    AS clarity_1,
+    $star(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation', 'clarity')    AS clarity_2,
+    $star(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation', 'liveliness') AS liveliness_1,
+    $star(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation', 'liveliness') AS liveliness_2,
+    $star(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation', 'connect')    AS connect_1,
+    $star(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation', 'connect')    AS connect_2,
+    $star(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation', 'overall')    AS overall_1,
+    $star(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation', 'overall')    AS overall_2,
+
     -- ---------- маркеры ----------
     $markers(f.mk1_dir, f.mk1_rev)           AS markers_1,
     $markers(f.mk2_dir, f.mk2_rev)           AS markers_2,
@@ -320,6 +382,7 @@ SELECT
     $marker_agreement(f.mk2_dir, f.mk2_rev)  AS markers_2_agreement,
 
     -- ---------- вердикт ----------
+    -- source_A / source_B — это колонки входных таблиц (см. $as_source выше)
     Just(Yson::From(<|
         winner:            $as_source(f.tov_winner, f.source_A, f.source_B),
         winner_model:      f.tov_winner,
@@ -348,17 +411,27 @@ SELECT
     |>))                                     AS meta_info,
 
     -- WITHOUT обязан быть последним элементом списка.
-    -- Первый блок — служебное этого запроса, второй — колонки, которые мы
-    -- только что пересчитали: они уже есть во входной таблице с прошлых
-    -- этапов, и без снятия YQL падает с «Duplicated member».
+    -- Первый блок — служебное этого запроса (включая ключи джойна), второй —
+    -- сырые ответы джаджа (dst — первый этап, dst_2 — второй), третий —
+    -- колонки, которые мы только что пересчитали: они уже есть во входной
+    -- таблице с прошлых этапов, и без снятия YQL падает с «Duplicated member».
+    --
+    -- pair_rows_1 / pair_rows_2 намеренно оставлены в выходе: это самопроверка
+    -- дедупа, везде 1 — значит во входах не было повторов. Мешают — допиши их
+    -- в этот же список.
     f.* WITHOUT IF EXISTS
         f.dir_yson, f.rev_yson, f.pass_order,
+        f.src_lo, f.src_hi,
         f.mk1_dir, f.mk2_dir, f.mk1_rev, f.mk2_rev,
         f.w_direct, f.w_reversed_norm,
-        f.dst, f.reasoning_dst, f.infer_dialog, f.tov_prompt, f._other,
+
+        f.dst, f.dst_2, f.reasoning_dst, f.reasoning_dst_2,
+        f.infer_dialog, f.tov_prompt, f._other,
 
         f.pointwise_1, f.pointwise_2,
         f.clc_metrics_1, f.clc_metrics_2,
+        f.clarity_1, f.clarity_2, f.liveliness_1, f.liveliness_2,
+        f.connect_1, f.connect_2, f.overall_1, f.overall_2,
         f.markers_1, f.markers_2,
         f.markers_1_flags, f.markers_2_flags,
         f.markers_1_list, f.markers_2_list,

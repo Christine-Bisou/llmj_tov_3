@@ -6,10 +6,21 @@ PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '2';
 
 -- input1 — прямой прогон, input2 — обратный.
--- В обеих таблицах: dst  = выход ПЕРВОГО этапа (маркеры),
---                   dst_2 = выход ВТОРОГО этапа (звёзды + sbs_comparison).
+-- В обеих таблицах: dst  = выход ПЕРВОГО этапа (маркеры + звёзды по каждому ответу),
+--                   dst_2 = выход ВТОРОГО этапа (аудит звёзд + sbs_comparison).
 -- Ниже сохранена твоя проводка: прямой берём из i1.dst_2, обратный из i2.dst.
 -- Если обратный прогон тоже кладёт второй этап в dst_2 — поменяй на i2.dst_2.
+--
+-- Что где лежит на выходе:
+--   pointwise_1 / pointwise_2       — первый этап. Он проходит по каждому ответу
+--                                     ОДИН раз, поэтому там просто score и
+--                                     reasoning на аспект, без проходов и средних.
+--   checked_pointwise_A / _B        — второй этап. Он судит пару дважды, поэтому
+--                                     там direct и reversed, в каждом — оценки
+--                                     аспектов и аудит маркеров.
+--   clc_metrics_1 / clc_metrics_2   — агрегат второго этапа: среднее двух проходов.
+--   sbs                             — вердикт: победитель источником ответа и
+--                                     обоснование, обратный проход нормализован.
 
 $yson_null = Just(Yson::From({}));
 
@@ -51,17 +62,70 @@ def process_json(s):
 $process_json = Python3::process_json($script);
 
 -- ========================= ОЦЕНКИ ПО АСПЕКТАМ =========================
+-- Блок оценок одного ответа. У первого этапа он может лежать под ключом
+-- 'evaluation' (промпт получает один ответ) или под 'model_N_evaluation'
+-- (оба ответа за один вызов) — поддерживаем оба варианта.
+$eval_node = ($node, $model) -> {
+    RETURN Yson::Lookup($node, $model) ?? Yson::Lookup($node, 'evaluation');
+};
+
 -- ConvertToDouble вместо LookupInt64: переживёт и 4, и 4.0, и "4".
+$asp_score = ($eval, $asp) -> {
+    RETURN Yson::ConvertToDouble(Yson::Lookup(Yson::Lookup($eval, $asp), 'score')) ?? 0.0;
+};
+
+$asp_why = ($eval, $asp) -> {
+    RETURN Yson::LookupString(Yson::Lookup($eval, $asp), 'reasoning') ?? '';
+};
+
 $aspect = ($node, $model, $asp) -> {
-    RETURN Yson::ConvertToDouble(
-        Yson::Lookup(Yson::Lookup(Yson::Lookup($node, $model), $asp), 'score')
-    ) ?? 0.0;
+    RETURN $asp_score($eval_node($node, $model), $asp);
 };
 
 $aspect_why = ($node, $model, $asp) -> {
-    RETURN Yson::LookupString(
-        Yson::Lookup(Yson::Lookup($node, $model), $asp), 'reasoning'
-    ) ?? '';
+    RETURN $asp_why($eval_node($node, $model), $asp);
+};
+
+-- Аспект как его выдал джадж: оценка и обоснование, без агрегатов.
+$asp_block = ($eval, $asp) -> {
+    RETURN <|
+        score:     CAST(Math::Round($asp_score($eval, $asp)) AS Int64),
+        reasoning: $asp_why($eval, $asp)
+    |>;
+};
+
+-- Четыре аспекта одного ответа одним куском — ровно та структура, которую
+-- отдаёт промпт: {clarity, liveliness, connect, overall} × {score, reasoning}.
+$eval_block = ($eval) -> {
+    RETURN <|
+        clarity:    $asp_block($eval, 'clarity'),
+        liveliness: $asp_block($eval, 'liveliness'),
+        connect:    $asp_block($eval, 'connect'),
+        overall:    $asp_block($eval, 'overall')
+    |>;
+};
+
+-- ПЕРВЫЙ ЭТАП. Проходит по каждому ответу один раз, поэтому здесь нет ни
+-- прямого с обратным, ни среднего: одна оценка и одно обоснование на аспект.
+$pointwise = ($node, $model) -> {
+    RETURN Just(Yson::From($eval_block($eval_node($node, $model))));
+};
+
+-- ВТОРОЙ ЭТАП. Пара судится дважды, поэтому у проверенных оценок два прохода.
+-- В обратном проходе ответы переставлены: ответ A лежит в 'model_2_evaluation'.
+-- Агрегат по двум проходам не дублируем — он лежит в clc_metrics.
+$checked_side = ($node, $eval_key, $review_key) -> {
+    RETURN <|
+        evaluation:     $eval_block($eval_node($node, $eval_key)),
+        markers_review: Yson::Lookup($node, $review_key)
+    |>;
+};
+
+$checked_pointwise = ($dir, $dir_eval, $dir_review, $rev, $rev_eval, $rev_review) -> {
+    RETURN Just(Yson::From(<|
+        direct:   $checked_side($dir, $dir_eval, $dir_review),
+        reversed: $checked_side($rev, $rev_eval, $rev_review)
+    |>));
 };
 
 -- Итоговая оценка аспекта: среднее двух проходов, округлённое ВНИЗ.
@@ -78,28 +142,6 @@ $clc = ($dir, $rev, $md, $mr) -> {
         liveliness: $final($dir, $rev, $md, $mr, 'liveliness'),
         connect:    $final($dir, $rev, $md, $mr, 'connect'),
         overall:    $final($dir, $rev, $md, $mr, 'overall')
-    |>));
-};
-
--- Подробности по проходам и обоснования — отдельной колонкой, чтобы не засорять clc_metrics.
-$clc_detail = ($dir, $rev, $md, $mr) -> {
-    RETURN Just(Yson::From(<|
-        clarity: <|
-            direct: $aspect($dir, $md, 'clarity'), reversed: $aspect($rev, $mr, 'clarity'),
-            reasoning: $aspect_why($dir, $md, 'clarity')
-        |>,
-        liveliness: <|
-            direct: $aspect($dir, $md, 'liveliness'), reversed: $aspect($rev, $mr, 'liveliness'),
-            reasoning: $aspect_why($dir, $md, 'liveliness')
-        |>,
-        connect: <|
-            direct: $aspect($dir, $md, 'connect'), reversed: $aspect($rev, $mr, 'connect'),
-            reasoning: $aspect_why($dir, $md, 'connect')
-        |>,
-        overall: <|
-            direct: $aspect($dir, $md, 'overall'), reversed: $aspect($rev, $mr, 'overall'),
-            reasoning: $aspect_why($dir, $md, 'overall')
-        |>
     |>));
 };
 
@@ -174,6 +216,15 @@ $winner_source = ($w, $s1, $s2) -> {
     END;
 };
 
+-- Сторона победителя буквой ответа, а не именем модели из промпта.
+$winner_side = ($w) -> {
+    RETURN CASE $w
+        WHEN 'model_1' THEN 'A'
+        WHEN 'model_2' THEN 'B'
+        ELSE 'draw'
+    END;
+};
+
 -- ========================= РАЗБОР =========================
 $parsed = (
     SELECT
@@ -184,10 +235,23 @@ $parsed = (
         $flip($verdict(dst_yson_reversed))   AS model_winner_reversed_normalized,
 
         -- красивые метрики по каждому ответу
-        $clc(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation')        AS clc_metrics_1,
-        $clc(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation')        AS clc_metrics_2,
-        $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS clc_detail_1,
-        $clc_detail(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation') AS clc_detail_2,
+        $clc(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS clc_metrics_1,
+        $clc(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation') AS clc_metrics_2,
+
+        -- звёзды первого этапа: по одному значению на аспект, без проходов
+        $pointwise(dst_yson_pointwise, 'model_1_evaluation') AS pointwise_1,
+        $pointwise(dst_yson_pointwise, 'model_2_evaluation') AS pointwise_2,
+
+        -- что со звёздами и маркерами сделал второй этап, по обоим проходам.
+        -- A — это answer_1, B — answer_2; в обратном проходе они переставлены.
+        $checked_pointwise(
+            dst_yson_direct,   'model_1_evaluation', 'model_1_markers_review',
+            dst_yson_reversed, 'model_2_evaluation', 'model_2_markers_review'
+        ) AS checked_pointwise_A,
+        $checked_pointwise(
+            dst_yson_direct,   'model_2_evaluation', 'model_2_markers_review',
+            dst_yson_reversed, 'model_1_evaluation', 'model_1_markers_review'
+        ) AS checked_pointwise_B,
 
         -- маркеры: подробно, флагами и списком имён
         Just(Yson::From(mk1))                AS markers_1,
@@ -214,6 +278,9 @@ $parsed = (
     FROM (
         SELECT
             i1.*,
+            -- первый этап проходит по паре один раз, порядок ответов на него не
+            -- влияет — берём его только из прямой таблицы
+            $process_json(CAST(i1.dst   AS String)) AS dst_yson_pointwise,
             $process_json(CAST(i1.dst_2 AS String)) AS dst_yson_direct,
             $process_json(CAST(i2.dst   AS String)) AS dst_yson_reversed,
             -- маркеры первого этапа берём из прямой таблицы: там ext_markers_1
@@ -226,7 +293,7 @@ $parsed = (
     ) AS d
 );
 
-$winner_calc = (
+$winner_raw = (
     SELECT
         p.*,
         CASE
@@ -241,6 +308,35 @@ $winner_calc = (
     FROM $parsed AS p
 );
 
+-- Вердикт отдельной колонкой и сразу в читаемом виде: победитель назван
+-- источником ответа, а не 'model_1', причём обратный проход уже нормализован.
+$winner_calc = (
+    SELECT
+        w.*,
+        Just(Yson::From(<|
+            winner:      $winner_source(w.tov_winner, w.answer_source_1, w.answer_source_2),
+            winner_side: $winner_side(w.tov_winner),
+            reasoning:   IF(
+                w.model_winner_reversed_normalized = w.tov_winner
+                    AND w.model_winner_direct != w.tov_winner,
+                $sbs_why(w.dst_yson_reversed),
+                $sbs_why(w.dst_yson_direct)
+            ),
+            agreement:   IF(w.model_winner_direct = w.model_winner_reversed_normalized, 'strong', 'weak'),
+            direct: <|
+                winner:      $winner_source(w.model_winner_direct, w.answer_source_1, w.answer_source_2),
+                winner_side: $winner_side(w.model_winner_direct),
+                reasoning:   $sbs_why(w.dst_yson_direct)
+            |>,
+            reversed: <|
+                winner:      $winner_source(w.model_winner_reversed_normalized, w.answer_source_1, w.answer_source_2),
+                winner_side: $winner_side(w.model_winner_reversed_normalized),
+                reasoning:   $sbs_why(w.dst_yson_reversed)
+            |>
+        |>)) AS sbs
+    FROM $winner_raw AS w
+);
+
 -- ========================= ВЫХОД 1: рабочая таблица =========================
 INSERT INTO {{output1}} WITH TRUNCATE
 SELECT
@@ -248,7 +344,8 @@ SELECT
     $winner_source(wc.tov_winner, wc.answer_source_1, wc.answer_source_2) AS tov_winner_source,
     wc.*,
     WITHOUT IF EXISTS
-        wc.dst, wc.dst_2, wc.dst_yson_direct, wc.dst_yson_reversed,
+        wc.dst, wc.dst_2,
+        wc.dst_yson_pointwise, wc.dst_yson_direct, wc.dst_yson_reversed,
         wc.mk1, wc.mk2,
         wc.infer_dialog, wc.tov_prompt,
         wc.reasoning_dst, wc.reasoning_dst_2,

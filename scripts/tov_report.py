@@ -121,16 +121,29 @@ def _paint(text, pval, m1_better, for_m1):
     return '**{%s}(%s)**' % (good if winning else bad, text)
 
 
+def _source_names(series):
+    """Сорсы одной стороны замера: [(имя, сколько строк)], частые первыми."""
+    if series is None:
+        return []
+    values = [str(v).strip() for v in series if str(v).strip() not in ('', 'None', 'nan')]
+    return Counter(values).most_common()
+
+
 def main(in1, in2, in3, mr_tables, token1=None, token2=None,
          param1=None, param2=None, html_file=None):
     df = pd.DataFrame(in1)
 
-    m1_name = '${global.model_1_name}'.strip()
-    m2_name = '${global.model_2_name}'.strip()
-
     total_cnt = len(df)
     if total_cnt == 0:
         return [], []
+
+    # Имена моделей берём из самих данных — answer_source_1 / answer_source_2
+    # едут из корзинки и совпадают с тем, что реально сравнивалось. Глобальные
+    # параметры графа остаются подстраховкой на случай пустой колонки.
+    src_1 = _source_names(df.get('answer_source_1'))
+    src_2 = _source_names(df.get('answer_source_2'))
+    m1_name = src_1[0][0] if src_1 else '${global.model_1_name}'.strip()
+    m2_name = src_2[0][0] if src_2 else '${global.model_2_name}'.strip()
 
     # ---------------------------------------------------------------- вердикты
     def classify_resolution(row):
@@ -242,6 +255,18 @@ def main(in1, in2, in3, mr_tables, token1=None, token2=None,
         'у которой значимо лучше.\n' % '\n'.join(mk_lines)
     )
 
+    # В корзинке может лежать не одна пара сорсов: тогда в шапке таблиц стоит
+    # самый частый, а остальные ушли бы молча — поэтому выписываем весь состав.
+    def _mix(src):
+        return ', '.join('%s (%d)' % (name, cnt) for name, cnt in src)
+
+    mixed_note = ''
+    if len(src_1) > 1 or len(src_2) > 1:
+        mixed_note = (
+            '* **Внимание, сорсы в замере смешаны:** слева — %s; справа — %s\n'
+            % (_mix(src_1), _mix(src_2))
+        )
+
     # ------------------------------------------------------------------- отчёт
     def cut(title, text):
         return '\n{%% cut "%s" %%}\n\n%s\n\n{%% endcut %%}\n' % (title, text)
@@ -273,8 +298,8 @@ def main(in1, in2, in3, mr_tables, token1=None, token2=None,
 * **Размер корзинки:** %d
 * **Название таблички:** %s
 * **Граф:** %s
-""" % (VERSION, pw_table, overall_winner, main_table,
-       draw_rate * 100, total_cnt, basket_path, nirvana_url)
+%s""" % (VERSION, pw_table, overall_winner, main_table,
+         draw_rate * 100, total_cnt, basket_path, nirvana_url, mixed_note)
 
     report_text += cut('Маркеры ToV', marker_details)
 

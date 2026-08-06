@@ -6,15 +6,16 @@ PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '2';
 
 -- input1 — прямой прогон, input2 — обратный.
--- В обеих таблицах: dst  = выход ПЕРВОГО этапа (маркеры + звёзды по каждому ответу),
---                   dst_2 = выход ВТОРОГО этапа (аудит звёзд + sbs_comparison).
--- Ниже сохранена твоя проводка: прямой берём из i1.dst_2, обратный из i2.dst.
--- Если обратный прогон тоже кладёт второй этап в dst_2 — поменяй на i2.dst_2.
+-- Первый этап разобран выше по пайплайну и приходит готовыми колонками:
+--   pointwise_1 / pointwise_2, clarity_N / liveliness_N / connect_N / overall_N,
+--   markers_N_answer, model_N_analysis. Здесь мы их не трогаем и не пересчитываем.
+-- dst = сырой выход ВТОРОГО этапа (аудит звёзд + sbs_comparison) в своей таблице:
+--   прямой берём из i1.dst, обратный из i2.dst.
 --
 -- Что где лежит на выходе:
---   pointwise_1 / pointwise_2       — первый этап. Он проходит по каждому ответу
---                                     ОДИН раз, поэтому там просто score и
---                                     reasoning на аспект, без проходов и средних.
+--   pointwise_1 / pointwise_2       — первый этап, как пришёл. Он проходит по
+--                                     каждому ответу ОДИН раз, поэтому там просто
+--                                     score и reasoning, без проходов и средних.
 --   checked_pointwise_A / _B        — второй этап. Он судит пару дважды, поэтому
 --                                     там direct и reversed, в каждом — оценки
 --                                     аспектов и аудит маркеров.
@@ -99,12 +100,6 @@ $eval_block = ($eval) -> {
         connect:    $asp_block($eval, 'connect'),
         overall:    $asp_block($eval, 'overall')
     |>;
-};
-
--- ПЕРВЫЙ ЭТАП. Проходит по каждому ответу один раз, поэтому здесь нет ни
--- прямого с обратным, ни среднего: одна оценка и одно обоснование на аспект.
-$pointwise = ($node, $model) -> {
-    RETURN Just(Yson::From($eval_block($eval_node($node, $model))));
 };
 
 -- ВТОРОЙ ЭТАП. Пара судится дважды, поэтому у проверенных оценок два прохода.
@@ -230,10 +225,6 @@ $parsed = (
         $clc(dst_yson_direct, dst_yson_reversed, 'model_1_evaluation', 'model_2_evaluation') AS clc_metrics_1,
         $clc(dst_yson_direct, dst_yson_reversed, 'model_2_evaluation', 'model_1_evaluation') AS clc_metrics_2,
 
-        -- звёзды первого этапа: по одному значению на аспект, без проходов
-        $pointwise(dst_yson_pointwise, 'model_1_evaluation') AS pointwise_1,
-        $pointwise(dst_yson_pointwise, 'model_2_evaluation') AS pointwise_2,
-
         -- что со звёздами и маркерами сделал второй этап, по обоим проходам.
         -- A — это answer_1, B — answer_2; в обратном проходе они переставлены.
         $checked_pointwise(
@@ -270,15 +261,12 @@ $parsed = (
     FROM (
         SELECT
             i1.*,
-            -- первый этап проходит по паре один раз, порядок ответов на него не
-            -- влияет — берём его только из прямой таблицы
-            $process_json(CAST(i1.dst   AS String)) AS dst_yson_pointwise,
-            $process_json(CAST(i1.dst_2 AS String)) AS dst_yson_direct,
-            $process_json(CAST(i2.dst   AS String)) AS dst_yson_reversed,
-            -- маркеры первого этапа берём из прямой таблицы: там ext_markers_1
-            -- относится к answer_1, ext_markers_2 — к answer_2, без перестановок
-            i1.ext_markers_1                        AS mk1,
-            i1.ext_markers_2                        AS mk2
+            $process_json(CAST(i1.dst AS String)) AS dst_yson_direct,
+            $process_json(CAST(i2.dst AS String)) AS dst_yson_reversed,
+            -- маркеры первого этапа берём из прямой таблицы: там markers_1_answer
+            -- относится к answer_1, markers_2_answer — к answer_2, без перестановок
+            i1.markers_1_answer                   AS mk1,
+            i1.markers_2_answer                   AS mk2
         FROM {{input1}} AS i1
         INNER JOIN {{input2}} AS i2
         USING (instruct_id)
@@ -336,8 +324,7 @@ SELECT
     $winner_source(wc.tov_winner, wc.answer_source_1, wc.answer_source_2) AS tov_winner_source,
     wc.*,
     WITHOUT IF EXISTS
-        wc.dst, wc.dst_2,
-        wc.dst_yson_pointwise, wc.dst_yson_direct, wc.dst_yson_reversed,
+        wc.dst, wc.dst_2, wc.dst_yson_direct, wc.dst_yson_reversed,
         wc.mk1, wc.mk2,
         wc.infer_dialog, wc.tov_prompt,
         wc.reasoning_dst, wc.reasoning_dst_2,

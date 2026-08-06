@@ -561,10 +561,9 @@ SELECT
             linguistic_scan_A: COALESCE(CAST(f.model_1_linguistic_scan AS String), ''),
             linguistic_scan_B: COALESCE(CAST(f.model_2_linguistic_scan AS String), ''),
 
-            -- сведённые звёзды, тот же вид, что и pointwise_1 / pointwise_2
-            -- в рабочей таблице: итог, среднее и что поставил каждый проход
-            pointwise_A: $pointwise_struct(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation'),
-            pointwise_B: $pointwise_struct(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation')
+            -- звёзды колонкой как есть, ничего не пересчитываем
+            pointwise_A: f.pointwise_1,
+            pointwise_B: f.pointwise_2
         |>,
         direct: <|
             winner:           $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2),

@@ -12,7 +12,8 @@ DECLARE $output1 AS String;
 
 -- Сборка входа для второго этапа (v4: аудит черновика + SbS вердикт).
 -- Черновик (markers_1_answer / markers_2_answer, model_1_analysis /
--- model_2_analysis, pointwise_1 / pointwise_2) приезжает из $input1.
+-- model_2_analysis, model_N_linguistic_scan, pointwise_1 / pointwise_2)
+-- приезжает из $input1.
 -- Парсить dst здесь больше не нужно.
 --
 -- Состав строк задаёт $input2, а не $input1: поинтвайзный проход теряет
@@ -228,6 +229,10 @@ $draft = (
         $key(instruct, answer_1, answer_2, answer_source_1, answer_source_2) AS k,
         model_1_analysis        AS model_1_analysis,
         model_2_analysis        AS model_2_analysis,
+        -- в шаблон второго этапа скан не идёт, но дальше по конвейеру нужен:
+        -- склейка кладёт его в разметку вторым комментарием
+        model_1_linguistic_scan AS model_1_linguistic_scan,
+        model_2_linguistic_scan AS model_2_linguistic_scan,
         markers_1_answer        AS markers_1_answer,
         markers_2_answer        AS markers_2_answer,
         pointwise_1             AS pointwise_1,
@@ -272,6 +277,8 @@ SELECT
 
   d.model_1_analysis        AS model_1_analysis,
   d.model_2_analysis        AS model_2_analysis,
+  d.model_1_linguistic_scan AS model_1_linguistic_scan,
+  d.model_2_linguistic_scan AS model_2_linguistic_scan,
   d.markers_1_answer        AS markers_1_answer,
   d.markers_2_answer        AS markers_2_answer,
   d.pointwise_1             AS pointwise_1,

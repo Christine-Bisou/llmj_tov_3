@@ -434,8 +434,8 @@ SELECT
                 checkboxes_B:    $markers_to_checkboxes(f.mk2_rev, f.mk2_rev),
                 pointwise_A:     $clc(f.rev_yson, f.rev_yson, 'model_2_evaluation', 'model_2_evaluation'),
                 pointwise_B:     $clc(f.rev_yson, f.rev_yson, 'model_1_evaluation', 'model_1_evaluation'),
-                comment_A:       COALESCE(CAST(f.model_1_analysis AS String), ''),
-                comment_B:       COALESCE(CAST(f.model_2_analysis AS String), ''),
+                comment_A:       COALESCE(CAST(f.model_1_linguistic_scan AS String), ''),
+                comment_B:       COALESCE(CAST(f.model_2_linguistic_scan AS String), ''),
                 general_comment: $sbs_why(f.rev_yson),
                 comment_judge:   $yson_null,
                 diff_pa:         $yson_null,
@@ -471,10 +471,17 @@ SELECT
         markers_B: $marker_list(f.mk2_dir, f.mk2_rev),
 
         annotations:      AsList(AsList(), AsList()),
-        -- разбор по ответу один на оба прохода, но список comments_*
-        -- позиционный: по элементу на воркера из worker_ids
-        comments_A:       ListReplicate(COALESCE(CAST(f.model_1_analysis AS String), ''), 2),
-        comments_B:       ListReplicate(COALESCE(CAST(f.model_2_analysis AS String), ''), 2),
+        -- список позиционный, по элементу на воркера из worker_ids. Черновик
+        -- у обоих проходов общий, поэтому вместо копии во второй позиции —
+        -- лингвистический скан: разные куски разбора вместо одного дважды
+        comments_A: AsList(
+            COALESCE(CAST(f.model_1_analysis AS String), ''),
+            COALESCE(CAST(f.model_1_linguistic_scan AS String), '')
+        ),
+        comments_B: AsList(
+            COALESCE(CAST(f.model_2_analysis AS String), ''),
+            COALESCE(CAST(f.model_2_linguistic_scan AS String), '')
+        ),
         general_comments: AsList($sbs_why(f.dir_yson), $sbs_why(f.rev_yson)),
 
         task_summarization: $yson_null,

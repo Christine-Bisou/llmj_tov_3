@@ -322,16 +322,36 @@ def main(in1, in2, in3, mr_tables, token1=None, token2=None,
 
     report_text += cut('Аналитика вердиктов', funnel_details)
 
+    # Тикет — из param2, токен — из token2. Каждый отказ печатаем: раньше
+    # отправка молчала одинаково и когда флаг выключен, и когда Стартрек
+    # ответил 404, и разбираться было не с чем.
+    ticket = str(param2 or '').strip()
     p_flag = str('${global.post_to_ticket_and_datalens}').strip().lower()
-    if param2 and token2 and p_flag in ['true', '1']:
+
+    if p_flag.startswith('${'):
+        # подстановка не сработала — считаем, что флаг не задан
+        print('POST SKIPPED: флаг post_to_ticket_and_datalens не подставился (%r)' % p_flag)
+    elif p_flag not in ('true', '1', 'yes'):
+        print('POST SKIPPED: флаг post_to_ticket_and_datalens = %r' % p_flag)
+    elif not ticket or ticket.startswith('${'):
+        print('POST SKIPPED: param2 (ключ тикета) пустой или не подставился: %r' % param2)
+    elif not token2:
+        print('POST SKIPPED: token2 не передан в кубик')
+    else:
+        url = 'https://st-api.yandex-team.ru/v2/issues/%s/comments' % ticket
         try:
-            requests.post(
-                'https://st-api.yandex-team.ru/v2/issues/%s/comments' % param2,
+            resp = requests.post(
+                url,
                 json={'text': report_text, 'markupType': 'markdown'},
-                headers={'Authorization': 'OAuth ' + token2},
+                headers={'Authorization': 'OAuth ' + str(token2).strip()},
+                timeout=30,
             )
+            if resp.status_code >= 300:
+                print('POST FAILED: %s -> %s %s' % (url, resp.status_code, resp.text[:1000]))
+            else:
+                print('POST OK: комментарий в %s' % ticket)
         except Exception as e:
-            print('API Error: %s' % e)
+            print('POST ERROR: %s -> %s' % (url, e))
 
     out_df = df.drop(columns=['confidence', 'final_winner'], errors='ignore')
     return out_df.to_dict('records'), [{

@@ -384,15 +384,15 @@ SELECT
 FROM $final AS f;
 
 -- ========================= ВЫХОД 2: формат разметки =========================
--- task_id — for_join: он единственный ключ, который едет из исходника до конца
--- неизменным, по нему же разметку потом класть обратно.
+-- task_id — instruct_id, как этого ждёт формат разметки. Рядом отдельной
+-- колонкой едет for_join: по нему разметку класть обратно в исходник.
 INSERT INTO $output2 WITH TRUNCATE
 SELECT
     f.for_join     AS for_join,
     f.instruct_id  AS instruct_id,
 
     Just(Yson::From(<|
-        task_id:    COALESCE(CAST(f.for_join AS String), ''),
+        task_id:    COALESCE(CAST(f.instruct_id AS String), ''),
         pool_id:    $yson_null,
         project_id: $yson_null,
         answer_A:   COALESCE(CAST(f.answer_1 AS String), ''),
@@ -450,7 +450,7 @@ SELECT
     |>)) AS raw_tov_markup,
 
     Just(Yson::From(<|
-        task_id:    COALESCE(CAST(f.for_join AS String), ''),
+        task_id:    COALESCE(CAST(f.instruct_id AS String), ''),
         pool_id:    $yson_null,
         project_id: $yson_null,
         worker_ids: AsList('direct', 'reverse'),

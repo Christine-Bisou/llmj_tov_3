@@ -178,28 +178,16 @@ $markers = ($d_mk, $r_mk) -> {
     }))));
 };
 
--- Перепроверка ОДНОГО прохода: флаг и вердикт аудита, без пояснения.
--- Пояснение — общее свойство ответа, оно живёт в common; здесь только то,
--- что этот проход решил сам. Это содержимое блоков direct / reverse.
-$markers_audit = ($mk_node) -> {
+-- Разметка ОДНОГО прохода как её выдал джадж: флаг, пояснение, перепроверка.
+-- Это содержимое блоков direct / reverse: маркеры лежат в проходе, который их
+-- поставил, и больше нигде — сравнить проходы можно и так, поставив блоки
+-- рядом, а сводка «увидел / не увидел» была бы теми же данными во второй раз.
+$markers_pass = ($mk_node) -> {
     RETURN ToDict(ListMap($marker_names, ($n) -> {
         RETURN AsTuple($n, <|
-            is_present: $is_on($mk_node, $n),
-            audit:      $audit($mk_node, $n)
-        |>);
-    }));
-};
-
--- Маркеры ответа с ризонингом джаджа плюс расхождение проходов.
--- Пояснение берём у того прохода, который маркер увидел.
-$markers_common = ($d_mk, $r_mk) -> {
-    RETURN ToDict(ListMap($marker_names, ($n) -> {
-        RETURN AsTuple($n, <|
-            is_present:  $is_on($d_mk, $n) OR $is_on($r_mk, $n),
-            in_direct:   $is_on($d_mk, $n),
-            in_reversed: $is_on($r_mk, $n),
-            agreed:      $is_on($d_mk, $n) == $is_on($r_mk, $n),
-            explanation: IF($is_on($d_mk, $n), $why($d_mk, $n), $why($r_mk, $n))
+            is_present:  $is_on($mk_node, $n),
+            explanation: $why($mk_node, $n),
+            audit:       $audit($mk_node, $n)
         |>);
     }));
 };
@@ -552,11 +540,12 @@ FROM $final AS f;
 --   raw_tov — сырьё, ровно три ключа: common, direct, reverse;
 --   out_tov — итог: четыре числа на ответ, флаги маркеров, победитель.
 --
--- Раскладка внутри raw_tov: в common всё, что относится к ответу целиком, —
--- маркеры с ризонингом, анализ, лингвистический скан, звёзды. В блоке прохода
--- только то, что этот проход решил сам: перепроверка маркеров и победитель.
--- Поэтому пояснение к маркеру лежит в одном месте, а вердикт аудита — в двух
--- проходах порознь, и разошедшийся аудит видно сразу.
+-- Раскладка внутри raw_tov: в common то, что у проходов общее, — анализ,
+-- лингвистический скан, звёзды. В блоке прохода то, что этот проход выдал
+-- сам: маркеры с пояснением и перепроверкой, победитель и обоснование.
+-- Маркеры лежат только в своих проходах: чтобы сравнить, достаточно
+-- поставить блоки рядом, а сводка «увидел / не увидел» была бы теми же
+-- данными во второй раз.
 --
 -- instruct_id тянем из исходника: на этапах разбора это просто нумерация
 -- строк таблицы, сквозным ключом он там быть перестал.
@@ -565,7 +554,6 @@ FROM $final AS f;
 -- должен доехать — пустой input_meta виден глазами, пропавшая строка нет.
 INSERT INTO $output3 WITH TRUNCATE
 SELECT
-    f.for_join     AS for_join,
     i3.instruct_id AS instruct_id,
 
     -- ---------- исходник, отдельными колонками ----------
@@ -577,10 +565,6 @@ SELECT
     -- ---------- сырьё ----------
     Just(Yson::From(<|
         common: <|
-            -- маркеры ответа с ризонингом джаджа
-            markers_A: $markers_common(f.mk1_dir, f.mk1_rev),
-            markers_B: $markers_common(f.mk2_dir, f.mk2_rev),
-
             -- разбор первого этапа, у проходов он общий
             analysis_A:        COALESCE(CAST(f.model_1_analysis AS String), ''),
             analysis_B:        COALESCE(CAST(f.model_2_analysis AS String), ''),
@@ -594,8 +578,8 @@ SELECT
         direct: <|
             winner:    $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2),
             reasoning: $sbs_why(f.dir_yson),
-            markers_A: $markers_audit(f.mk1_dir),
-            markers_B: $markers_audit(f.mk2_dir)
+            markers_A: $markers_pass(f.mk1_dir),
+            markers_B: $markers_pass(f.mk2_dir)
         |>,
         -- обратный проход отдан уже нормализованным: A — это answer_1,
         -- хотя в сыром ответе она лежит под model_2. Победитель тоже
@@ -603,16 +587,16 @@ SELECT
         reverse: <|
             winner:    $winner_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2),
             reasoning: $sbs_why(f.rev_yson),
-            markers_A: $markers_audit(f.mk1_rev),
-            markers_B: $markers_audit(f.mk2_rev)
+            markers_A: $markers_pass(f.mk1_rev),
+            markers_B: $markers_pass(f.mk2_rev)
         |>
     |>)) AS raw_tov,
 
     -- ---------- итог ----------
     Just(Yson::From(<|
-        task_id:  COALESCE(CAST(i3.instruct_id AS String), ''),
-        source_A: COALESCE(CAST(f.answer_source_1 AS String), ''),
-        source_B: COALESCE(CAST(f.answer_source_2 AS String), ''),
+        instruct_id: COALESCE(CAST(i3.instruct_id AS String), ''),
+        source_A:    COALESCE(CAST(f.answer_source_1 AS String), ''),
+        source_B:    COALESCE(CAST(f.answer_source_2 AS String), ''),
 
         -- четыре конечных числа на ответ, без обвязки
         pointwise_A: $clc_struct(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation'),

@@ -102,30 +102,13 @@ $pointwise = ($dir, $rev, $md, $mr) -> {
     |>));
 };
 
--- То же самое, но с обоснованиями ОБОИХ проходов. Нужно там, где блоки
--- проходов звёзд не содержат вовсе (выход 3): иначе обоснование обратного
--- прохода просто теряется.
-$aspect_block_full = ($dir, $rev, $md, $mr, $asp) -> {
-    RETURN <|
-        score:              $star($dir, $rev, $md, $mr, $asp),
-        avg:                $avg($dir, $rev, $md, $mr, $asp),
-        direct:             $score($dir, $md, $asp),
-        reversed:           $score($rev, $mr, $asp),
-        reasoning_direct:   $reason($dir, $md, $asp),
-        reasoning_reversed: $reason($rev, $mr, $asp)
-    |>;
-};
-
--- Структурой, а не Yson: этот блок кладут ВНУТРЬ другого блока, и вложенный
--- Yson там пришлось бы разворачивать вторым Yson::Parse. Наружу всё равно
--- уходит один Yson::From на всю колонку.
-$pointwise_struct = ($dir, $rev, $md, $mr) -> {
-    RETURN <|
-        clarity:    $aspect_block_full($dir, $rev, $md, $mr, 'clarity'),
-        liveliness: $aspect_block_full($dir, $rev, $md, $mr, 'liveliness'),
-        connect:    $aspect_block_full($dir, $rev, $md, $mr, 'connect'),
-        overall:    $aspect_block_full($dir, $rev, $md, $mr, 'overall')
-    |>;
+-- Узел ответа джаджа целиком, как он пришёл в dst: model_N_evaluation со
+-- звёздами и обоснованиями, model_N_markers_review с summary и маркерами.
+-- Ничего не пересобираем — в блоке прохода лежит ровно то, что сказал джадж.
+-- Serialize обязателен: Yson::Lookup отдаёт ресурс-ноду, а внутрь структуры,
+-- которая уходит в Yson::From, класть можно только сам Yson.
+$dst_node = ($y, $key) -> {
+    RETURN Yson::Serialize(Yson::Lookup($y, $key));
 };
 
 -- Четыре числа без обвязки — формат разметки.
@@ -176,20 +159,6 @@ $markers = ($d_mk, $r_mk) -> {
             explanation: IF($is_on($d_mk, $n), $why($d_mk, $n), $why($r_mk, $n))
         |>);
     }))));
-};
-
--- Разметка ОДНОГО прохода как её выдал джадж: флаг, пояснение, перепроверка.
--- Это содержимое блоков direct / reverse: маркеры лежат в проходе, который их
--- поставил, и больше нигде — сравнить проходы можно и так, поставив блоки
--- рядом, а сводка «увидел / не увидел» была бы теми же данными во второй раз.
-$markers_pass = ($mk_node) -> {
-    RETURN ToDict(ListMap($marker_names, ($n) -> {
-        RETURN AsTuple($n, <|
-            is_present:  $is_on($mk_node, $n),
-            explanation: $why($mk_node, $n),
-            audit:       $audit($mk_node, $n)
-        |>);
-    }));
 };
 
 -- Только флаги, без пояснений — для метрик и джойнов с золотом.
@@ -540,12 +509,14 @@ FROM $final AS f;
 --   raw_tov — сырьё, ровно три ключа: common, direct, reverse;
 --   out_tov — итог: четыре числа на ответ, флаги маркеров, победитель.
 --
--- Раскладка внутри raw_tov: в common то, что у проходов общее, — анализ,
--- лингвистический скан, звёзды. В блоке прохода то, что этот проход выдал
--- сам: маркеры с пояснением и перепроверкой, победитель и обоснование.
--- Маркеры лежат только в своих проходах: чтобы сравнить, достаточно
--- поставить блоки рядом, а сводка «увидел / не увидел» была бы теми же
--- данными во второй раз.
+-- Раскладка внутри raw_tov: в блоке прохода лежит ответ джаджа как есть,
+-- разложенный по ответам, — checked_markers_* и checked_pointwise_* это
+-- нетронутые узлы из dst со всеми обоснованиями и summary. Отдельно из
+-- sbs_comparison вынут победитель: сразу сорсом, а не «model_1», и его
+-- обоснование рядом. В common только то, что у проходов действительно
+-- общее: разбор первого этапа и лингвистический скан. Сводных звёзд там
+-- нет намеренно — итоговая четвёрка чисел живёт в out_tov, а класть её
+-- ещё и сюда значит записать те же цифры в третий раз.
 --
 -- instruct_id тянем из исходника: на этапах разбора это просто нумерация
 -- строк таблицы, сквозным ключом он там быть перестал.
@@ -564,31 +535,31 @@ SELECT
 
     -- ---------- сырьё ----------
     Just(Yson::From(<|
+        -- разбор первого этапа: у проходов он общий
         common: <|
-            -- разбор первого этапа, у проходов он общий
             analysis_A:        COALESCE(CAST(f.model_1_analysis AS String), ''),
             analysis_B:        COALESCE(CAST(f.model_2_analysis AS String), ''),
             linguistic_scan_A: COALESCE(CAST(f.model_1_linguistic_scan AS String), ''),
-            linguistic_scan_B: COALESCE(CAST(f.model_2_linguistic_scan AS String), ''),
-
-            -- звёзды целиком: итог, среднее, оба прохода, оба обоснования
-            pointwise_A: $pointwise_struct(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation'),
-            pointwise_B: $pointwise_struct(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation')
+            linguistic_scan_B: COALESCE(CAST(f.model_2_linguistic_scan AS String), '')
         |>,
         direct: <|
-            winner:    $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2),
-            reasoning: $sbs_why(f.dir_yson),
-            markers_A: $markers_pass(f.mk1_dir),
-            markers_B: $markers_pass(f.mk2_dir)
+            winner:              $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2),
+            winner_reasoning:    $sbs_why(f.dir_yson),
+            checked_markers_A:   $dst_node(f.dir_yson, 'model_1_markers_review'),
+            checked_markers_B:   $dst_node(f.dir_yson, 'model_2_markers_review'),
+            checked_pointwise_A: $dst_node(f.dir_yson, 'model_1_evaluation'),
+            checked_pointwise_B: $dst_node(f.dir_yson, 'model_2_evaluation')
         |>,
-        -- обратный проход отдан уже нормализованным: A — это answer_1,
-        -- хотя в сыром ответе она лежит под model_2. Победитель тоже
-        -- развёрнут, сравнивать с прямым можно как есть
+        -- в обратном проходе ответы переставлены: answer_1 лежит под model_2.
+        -- Раскладываем по A и B, а не по model_N, иначе блоки нельзя ставить
+        -- рядом. Победитель по той же причине уже развёрнут
         reverse: <|
-            winner:    $winner_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2),
-            reasoning: $sbs_why(f.rev_yson),
-            markers_A: $markers_pass(f.mk1_rev),
-            markers_B: $markers_pass(f.mk2_rev)
+            winner:              $winner_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2),
+            winner_reasoning:    $sbs_why(f.rev_yson),
+            checked_markers_A:   $dst_node(f.rev_yson, 'model_2_markers_review'),
+            checked_markers_B:   $dst_node(f.rev_yson, 'model_1_markers_review'),
+            checked_pointwise_A: $dst_node(f.rev_yson, 'model_2_evaluation'),
+            checked_pointwise_B: $dst_node(f.rev_yson, 'model_1_evaluation')
         |>
     |>)) AS raw_tov,
 

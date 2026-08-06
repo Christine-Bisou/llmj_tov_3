@@ -116,23 +116,30 @@ $aspect_block_full = ($dir, $rev, $md, $mr, $asp) -> {
     |>;
 };
 
-$pointwise_full = ($dir, $rev, $md, $mr) -> {
-    RETURN Just(Yson::From(<|
+-- Структурой, а не Yson: этот блок кладут ВНУТРЬ другого блока, и вложенный
+-- Yson там пришлось бы разворачивать вторым Yson::Parse. Наружу всё равно
+-- уходит один Yson::From на всю колонку.
+$pointwise_struct = ($dir, $rev, $md, $mr) -> {
+    RETURN <|
         clarity:    $aspect_block_full($dir, $rev, $md, $mr, 'clarity'),
         liveliness: $aspect_block_full($dir, $rev, $md, $mr, 'liveliness'),
         connect:    $aspect_block_full($dir, $rev, $md, $mr, 'connect'),
         overall:    $aspect_block_full($dir, $rev, $md, $mr, 'overall')
-    |>));
+    |>;
 };
 
 -- Четыре числа без обвязки — формат разметки.
-$clc = ($dir, $rev, $md, $mr) -> {
-    RETURN Just(Yson::From(<|
+$clc_struct = ($dir, $rev, $md, $mr) -> {
+    RETURN <|
         clarity:    $star($dir, $rev, $md, $mr, 'clarity'),
         liveliness: $star($dir, $rev, $md, $mr, 'liveliness'),
         connect:    $star($dir, $rev, $md, $mr, 'connect'),
         overall:    $star($dir, $rev, $md, $mr, 'overall')
-    |>));
+    |>;
+};
+
+$clc = ($dir, $rev, $md, $mr) -> {
+    RETURN Just(Yson::From($clc_struct($dir, $rev, $md, $mr)));
 };
 
 -- ========================= МАРКЕРЫ =========================
@@ -171,36 +178,41 @@ $markers = ($d_mk, $r_mk) -> {
     }))));
 };
 
--- Разметка ОДНОГО прохода как её выдал джадж: флаг, пояснение, вердикт аудита.
--- Это то, что лежит в блоках direct / reverse выхода 3.
-$markers_pass = ($mk_node) -> {
-    RETURN Just(Yson::From(ToDict(ListMap($marker_names, ($n) -> {
+-- Перепроверка ОДНОГО прохода: флаг и вердикт аудита, без пояснения.
+-- Пояснение — общее свойство ответа, оно живёт в common; здесь только то,
+-- что этот проход решил сам. Это содержимое блоков direct / reverse.
+$markers_audit = ($mk_node) -> {
+    RETURN ToDict(ListMap($marker_names, ($n) -> {
         RETURN AsTuple($n, <|
-            is_present:  $is_on($mk_node, $n),
-            explanation: $why($mk_node, $n),
-            audit:       $audit($mk_node, $n)
+            is_present: $is_on($mk_node, $n),
+            audit:      $audit($mk_node, $n)
         |>);
-    }))));
+    }));
 };
 
--- Сводка по проходам без текста: пояснения уже лежат в блоках проходов,
--- второй раз их класть незачем — здесь только кто что увидел.
-$markers_passes = ($d_mk, $r_mk) -> {
-    RETURN Just(Yson::From(ToDict(ListMap($marker_names, ($n) -> {
+-- Маркеры ответа с ризонингом джаджа плюс расхождение проходов.
+-- Пояснение берём у того прохода, который маркер увидел.
+$markers_common = ($d_mk, $r_mk) -> {
+    RETURN ToDict(ListMap($marker_names, ($n) -> {
         RETURN AsTuple($n, <|
             is_present:  $is_on($d_mk, $n) OR $is_on($r_mk, $n),
             in_direct:   $is_on($d_mk, $n),
             in_reversed: $is_on($r_mk, $n),
-            agreed:      $is_on($d_mk, $n) == $is_on($r_mk, $n)
+            agreed:      $is_on($d_mk, $n) == $is_on($r_mk, $n),
+            explanation: IF($is_on($d_mk, $n), $why($d_mk, $n), $why($r_mk, $n))
         |>);
-    }))));
+    }));
 };
 
 -- Только флаги, без пояснений — для метрик и джойнов с золотом.
-$marker_flags = ($d_mk, $r_mk) -> {
-    RETURN Just(Yson::From(ToDict(ListMap($marker_names, ($n) -> {
+$flags_dict = ($d_mk, $r_mk) -> {
+    RETURN ToDict(ListMap($marker_names, ($n) -> {
         RETURN AsTuple($n, $is_on($d_mk, $n) OR $is_on($r_mk, $n));
-    }))));
+    }));
+};
+
+$marker_flags = ($d_mk, $r_mk) -> {
+    RETURN Just(Yson::From($flags_dict($d_mk, $r_mk)));
 };
 
 $marker_list = ($d_mk, $r_mk) -> {
@@ -537,21 +549,24 @@ FROM $final AS f;
 -- ========================= ВЫХОД 3: исходник + разбор =========================
 -- Одна строка = одна пара: слева поля исходника как они лежат в $input3,
 -- справа две колонки разбора.
---   raw_tov — сырьё: что сказал каждый проход и что из этого собралось;
---   out_tov — итог: четыре числа на ответ, флаги маркеров, победитель, метрики.
--- Ничего не дублируем между блоками. Правило простое: данные живут там, где
--- они появились. Пояснения к маркерам — только в блоке своего прохода;
--- в common по маркерам лежит лишь кто что увидел. Звёзды в блоки проходов
--- не попадают вовсе: у аспекта два числа и два обоснования, и оба уже есть
--- в common.pointwise_*, разбирать их по проходам значило бы разложить одно
--- и то же дважды.
+--   raw_tov — сырьё, ровно три ключа: common, direct, reverse;
+--   out_tov — итог: четыре числа на ответ, флаги маркеров, победитель.
+--
+-- Раскладка внутри raw_tov: в common всё, что относится к ответу целиком, —
+-- маркеры с ризонингом, анализ, лингвистический скан, звёзды. В блоке прохода
+-- только то, что этот проход решил сам: перепроверка маркеров и победитель.
+-- Поэтому пояснение к маркеру лежит в одном месте, а вердикт аудита — в двух
+-- проходах порознь, и разошедшийся аудит видно сразу.
+--
+-- instruct_id тянем из исходника: на этапах разбора это просто нумерация
+-- строк таблицы, сквозным ключом он там быть перестал.
 --
 -- LEFT JOIN, а не INNER: если строки в исходнике не нашлось, разбор всё равно
 -- должен доехать — пустой input_meta виден глазами, пропавшая строка нет.
 INSERT INTO $output3 WITH TRUNCATE
 SELECT
-    f.for_join    AS for_join,
-    f.instruct_id AS instruct_id,
+    f.for_join     AS for_join,
+    i3.instruct_id AS instruct_id,
 
     -- ---------- исходник, отдельными колонками ----------
     i3.answers              AS answers,
@@ -561,71 +576,57 @@ SELECT
 
     -- ---------- сырьё ----------
     Just(Yson::From(<|
+        common: <|
+            -- маркеры ответа с ризонингом джаджа
+            markers_A: $markers_common(f.mk1_dir, f.mk1_rev),
+            markers_B: $markers_common(f.mk2_dir, f.mk2_rev),
+
+            -- разбор первого этапа, у проходов он общий
+            analysis_A:        COALESCE(CAST(f.model_1_analysis AS String), ''),
+            analysis_B:        COALESCE(CAST(f.model_2_analysis AS String), ''),
+            linguistic_scan_A: COALESCE(CAST(f.model_1_linguistic_scan AS String), ''),
+            linguistic_scan_B: COALESCE(CAST(f.model_2_linguistic_scan AS String), ''),
+
+            -- звёзды целиком: итог, среднее, оба прохода, оба обоснования
+            pointwise_A: $pointwise_struct(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation'),
+            pointwise_B: $pointwise_struct(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation')
+        |>,
         direct: <|
-            winner:       $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2),
-            winner_model: f.w_direct,
-            reasoning:    $sbs_why(f.dir_yson),
-            markers_A:    $markers_pass(f.mk1_dir),
-            markers_B:    $markers_pass(f.mk2_dir)
+            winner:    $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2),
+            reasoning: $sbs_why(f.dir_yson),
+            markers_A: $markers_audit(f.mk1_dir),
+            markers_B: $markers_audit(f.mk2_dir)
         |>,
         -- обратный проход отдан уже нормализованным: A — это answer_1,
         -- хотя в сыром ответе она лежит под model_2. Победитель тоже
         -- развёрнут, сравнивать с прямым можно как есть
         reverse: <|
-            winner:       $winner_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2),
-            winner_model: f.w_reversed_norm,
-            reasoning:    $sbs_why(f.rev_yson),
-            markers_A:    $markers_pass(f.mk1_rev),
-            markers_B:    $markers_pass(f.mk2_rev)
-        |>,
-        common: <|
-            winner:           $winner_source(f.tov_winner, f.answer_source_1, f.answer_source_2),
-            winner_model:     f.tov_winner,
-            winner_agreement: $agreement(f.w_direct, f.w_reversed_norm),
-            winner_strength:  $strength(f.w_direct, f.w_reversed_norm),
-
-            -- звёзды целиком: итог, среднее, оба прохода, оба обоснования
-            pointwise_A: $pointwise_full(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation'),
-            pointwise_B: $pointwise_full(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation'),
-
-            -- по маркерам только расхождение проходов, текст выше
-            markers_A: $markers_passes(f.mk1_dir, f.mk1_rev),
-            markers_B: $markers_passes(f.mk2_dir, f.mk2_rev),
-
-            -- разбор первого этапа, у проходов он общий
-            analysis_A:         COALESCE(CAST(f.model_1_analysis AS String), ''),
-            analysis_B:         COALESCE(CAST(f.model_2_analysis AS String), ''),
-            linguistic_scan_A:  COALESCE(CAST(f.model_1_linguistic_scan AS String), ''),
-            linguistic_scan_B:  COALESCE(CAST(f.model_2_linguistic_scan AS String), '')
+            winner:    $winner_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2),
+            reasoning: $sbs_why(f.rev_yson),
+            markers_A: $markers_audit(f.mk1_rev),
+            markers_B: $markers_audit(f.mk2_rev)
         |>
     |>)) AS raw_tov,
 
     -- ---------- итог ----------
     Just(Yson::From(<|
-        task_id:  COALESCE(CAST(f.for_join AS String), ''),
+        task_id:  COALESCE(CAST(i3.instruct_id AS String), ''),
         source_A: COALESCE(CAST(f.answer_source_1 AS String), ''),
         source_B: COALESCE(CAST(f.answer_source_2 AS String), ''),
 
         -- четыре конечных числа на ответ, без обвязки
-        pointwise_A: $clc(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation'),
-        pointwise_B: $clc(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation'),
+        pointwise_A: $clc_struct(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation'),
+        pointwise_B: $clc_struct(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation'),
 
         -- словарь флагов: имя маркера -> bool, ничего кроме
-        markers_A:      $marker_flags(f.mk1_dir, f.mk1_rev),
-        markers_B:      $marker_flags(f.mk2_dir, f.mk2_rev),
-        markers_A_list: $marker_list(f.mk1_dir, f.mk1_rev),
-        markers_B_list: $marker_list(f.mk2_dir, f.mk2_rev),
+        markers_A: $flags_dict(f.mk1_dir, f.mk1_rev),
+        markers_B: $flags_dict(f.mk2_dir, f.mk2_rev),
 
-        winner:       $winner_source(f.tov_winner, f.answer_source_1, f.answer_source_2),
-        winner_model: f.tov_winner,
+        winner: $winner_source(f.tov_winner, f.answer_source_1, f.answer_source_2),
 
-        -- метрики согласованности: по ним и отбирают строки на ручной просмотр
-        winner_agreement:    $agreement(f.w_direct, f.w_reversed_norm),
-        winner_strength:     $strength(f.w_direct, f.w_reversed_norm),
-        markers_A_agreement: $marker_agreement(f.mk1_dir, f.mk1_rev),
-        markers_B_agreement: $marker_agreement(f.mk2_dir, f.mk2_rev),
-
-        skip: false
+        -- согласованность проходов: по ней и отбирают строки на ручной просмотр
+        winner_agreement: $agreement(f.w_direct, f.w_reversed_norm),
+        winner_strength:  $strength(f.w_direct, f.w_reversed_norm)
     |>)) AS out_tov
 
 FROM $final AS f

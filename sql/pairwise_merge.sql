@@ -158,7 +158,7 @@ $rules = (
 
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
-    r.* WITHOUT if exists r._other, r.tov_winner,
+    -- дополнительные колонки идут ДО r.*: WITHOUT обязан закрывать список
     CAST(r.v_base AS String) AS tov_winner_stage2,
     -- итоговый вердикт под выбранное правило: колонка называется как раньше,
     -- чтобы скрипт метрики завёлся без правок
@@ -168,7 +168,9 @@ SELECT
         WHEN 'B'      THEN r.rule_b
         WHEN 'C'      THEN r.rule_c
         ELSE r.v_base
-    END AS tov_winner
+    END AS tov_winner,
+    r.*
+    WITHOUT IF EXISTS r._other, r.tov_winner
 FROM $rules AS r;
 
 -- Сравнение правил: сначала по всей выборке, потом только по пересуженным парам

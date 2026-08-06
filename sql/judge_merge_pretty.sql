@@ -82,14 +82,10 @@ $aspect = ($node, $model, $asp) -> {
     RETURN $asp_score($eval_node($node, $model), $asp);
 };
 
-$aspect_why = ($node, $model, $asp) -> {
-    RETURN $asp_why($eval_node($node, $model), $asp);
-};
-
 -- Аспект как его выдал джадж: оценка и обоснование, без агрегатов.
 $asp_block = ($eval, $asp) -> {
     RETURN <|
-        score:     CAST(Math::Round($asp_score($eval, $asp)) AS Int64),
+        score:     CAST(Math::Floor($asp_score($eval, $asp) + 0.5) AS Int64),
         reasoning: $asp_why($eval, $asp)
     |>;
 };
@@ -117,7 +113,7 @@ $pointwise = ($node, $model) -> {
 $checked_side = ($node, $eval_key, $review_key) -> {
     RETURN <|
         evaluation:     $eval_block($eval_node($node, $eval_key)),
-        markers_review: Yson::Lookup($node, $review_key)
+        markers_review: Yson::Lookup($node, $review_key) ?? Yson::From(<||>)
     |>;
 };
 
@@ -155,10 +151,6 @@ $marker_names = AsList(
 
 $is_on = ($m, $name) -> {
     RETURN Yson::ConvertToBool(Yson::Lookup(Yson::Lookup($m, $name), 'is_present')) ?? false;
-};
-
-$why = ($m, $name) -> {
-    RETURN Yson::LookupString(Yson::Lookup($m, $name), 'explanation') ?? '';
 };
 
 -- список имён сработавших маркеров — удобно глазами и для группировок

@@ -18,11 +18,12 @@ import json
 import cyson
 
 
+# Достаёт winner/confidence из ответа сравнительного джаджа.
+# Дешёвые модели любят обрамлять JSON текстом и markdown — это учтено.
+# В докстринге только сигнатура: лишний текст YQL не переваривает.
 def parse_pairwise(s):
     """
     (String?) -> Yson?
-    Достаёт winner/confidence из ответа сравнительного джаджа.
-    Дешёвые модели любят обрамлять JSON текстом и markdown — это учтено.
     """
     if s is None:
         return None

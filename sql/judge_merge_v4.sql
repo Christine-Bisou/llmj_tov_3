@@ -277,13 +277,6 @@ $strength = ($d, $r) -> {
     END;
 };
 
--- Поле из input_meta исходника. ConvertToString, а не LookupString: под
--- Yson.AutoConvert переживёт и "1", и 1 — числовой instruct_id иначе
--- вернулся бы пустым.
-$meta_field = ($meta, $key) -> {
-    RETURN Yson::ConvertToString(Yson::Lookup($meta, $key)) ?? '';
-};
-
 -- В формате разметки поле winner знает только имя сорса или 'draw', и пустую
 -- строку вместо отсутствующего сорса — отсюда отдельная обёртка.
 $winner_source = ($w, $s1, $s2) -> {
@@ -540,15 +533,13 @@ FROM $final AS f;
 -- В common то, что относится к паре целиком: маркеры и разбор первого
 -- этапа и сведённые по двум проходам звёзды.
 --
--- instruct_id тянем из input_meta исходника: колонкой на этапах разбора это
--- просто нумерация строк таблицы, сквозным ключом он там быть перестал.
+-- Ключей в выходе нет: instruct_id и так лежит в input_meta, а склейка идёт
+-- по for_join — колонкой он наружу не едет, только джойнит.
 --
 -- LEFT JOIN, а не INNER: если строки в исходнике не нашлось, разбор всё равно
 -- должен доехать — пустой input_meta виден глазами, пропавшая строка нет.
 INSERT INTO $output3 WITH TRUNCATE
 SELECT
-    $meta_field(i3.input_meta, 'instruct_id') AS instruct_id,
-
     -- ---------- исходник, отдельными колонками ----------
     i3.answers              AS answers,
     i3.input_final_messages AS input_final_messages,

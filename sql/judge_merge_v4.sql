@@ -591,9 +591,8 @@ SELECT
 
     -- ---------- итог ----------
     Just(Yson::From(<|
-        instruct_id: $meta_field(i3.input_meta, 'instruct_id'),
-        source_A:    COALESCE(CAST(f.answer_source_1 AS String), ''),
-        source_B:    COALESCE(CAST(f.answer_source_2 AS String), ''),
+        source_A: COALESCE(CAST(f.answer_source_1 AS String), ''),
+        source_B: COALESCE(CAST(f.answer_source_2 AS String), ''),
 
         -- четыре конечных числа на ответ, без обвязки
         pointwise_A: $clc_struct(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation'),

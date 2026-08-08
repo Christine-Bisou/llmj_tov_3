@@ -5,7 +5,6 @@
     model_1  .. model_7    — имена моделей (utf8)
     dialog_2               — диалог: [{"role": ..., "content": ...}, ...]
     dialog_1               — запасной диалог, если dialog_2 пуст
-    instruct               — системная инструкция (опционально, свёрнута)
 
 Как выглядит страница:
     * диалог: пользователь справа, ассистент слева;
@@ -16,7 +15,8 @@
     * ниже сами собой строятся две шкалы победителей: места сортируются по
       возрастанию и сжимаются к первому, даже если первое не проставлено
       (например 3, 2, 5 → 1-е, 2-е, 3-е места);
-    * общий комментарий и один итоговый JSON с кнопками «скопировать»/«скачать».
+    * два комментария — ToV слева, ПА справа — и один итоговый JSON
+      с кнопками «скопировать»/«скачать».
 
 Локальная проверка:
     python render/render_seven_answers.py --demo out.html
@@ -166,10 +166,10 @@ _HTML_HEAD = r"""<!DOCTYPE html>
   --ink:          #1c1917;
   --ink-2:        #57534e;
   --ink-3:        #a8a29e;
-  --teal:         #0d9488;
-  --teal-light:   #f0fdfa;
-  --teal-border:  #99f6e4;
-  --teal-mid:     #2dd4bf;
+  --pink:         #db2777;
+  --pink-light:   #fdf2f8;
+  --pink-border:  #fbcfe8;
+  --pink-mid:     #f472b6;
   --rose:         #e11d48;
   --rose-light:   #fff1f2;
   --rose-border:  #fecdd3;
@@ -213,16 +213,19 @@ body {
 }
 .card-head .right { margin-left: auto; display: flex; gap: 6px; text-transform: none; letter-spacing: 0 }
 
-details.instruct summary {
-  cursor: pointer; padding: 10px 16px; background: var(--surface-2);
-  font-size: 11px; font-weight: 700; letter-spacing: .08em;
-  text-transform: uppercase; color: var(--ink-3); user-select: none;
+/* Комментарии: ToV слева, ПА справа */
+.comments {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 14px; padding: 14px 16px;
 }
-details.instruct[open] summary { border-bottom: 1px solid var(--border-light) }
-details.instruct .instruct-body {
-  padding: 14px 16px; white-space: pre-wrap; font-size: 13px;
-  line-height: 1.6; color: var(--ink-2); max-height: 300px; overflow-y: auto;
+@media (max-width: 760px) { .comments { grid-template-columns: 1fr } }
+.comment-col { display: flex; flex-direction: column; gap: 6px }
+.comment-lbl {
+  align-self: flex-start; padding: 3px 10px; border-radius: var(--radius-xs);
+  font-size: 10.5px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase;
 }
+.comment-lbl.tov { background: var(--pink); color: #fff }
+.comment-lbl.pa { background: var(--indigo); color: #fff }
 
 /* Диалог: ассистент слева, пользователь справа */
 .dialog-turns { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px }
@@ -234,7 +237,7 @@ details.instruct .instruct-body {
   letter-spacing: .08em; padding: 0 4px;
 }
 .turn.user .turn-who { color: var(--indigo) }
-.turn.assistant .turn-who { color: var(--teal) }
+.turn.assistant .turn-who { color: var(--pink) }
 .bubble {
   display: inline-block; max-width: 78%;
   padding: 10px 15px; border-radius: 14px;
@@ -245,7 +248,7 @@ details.instruct .instruct-body {
   border-top-right-radius: 3px; white-space: pre-wrap; text-align: left;
 }
 .turn.assistant .bubble {
-  background: var(--teal-light); border: 1px solid var(--teal-border);
+  background: var(--pink-light); border: 1px solid var(--pink-border);
   border-top-left-radius: 3px;
 }
 .turn.last-user .bubble { box-shadow: 0 0 0 3px rgba(79,70,229,.15) }
@@ -275,20 +278,20 @@ details.instruct .instruct-body {
   margin: 6px 0; padding: 2px 0 2px 10px;
   border-left: 3px solid var(--border); color: var(--ink-2);
 }
-.md a { color: var(--teal) }
+.md a { color: var(--pink) }
 
 /* Панель включения моделей */
 .toggles { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; align-items: center }
 .tgl {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 5px 12px; border-radius: 999px;
-  border: 1px solid var(--teal-border); background: var(--teal-light);
-  color: var(--teal); font: inherit; font-size: 12px; font-weight: 700;
+  border: 1px solid var(--pink-border); background: var(--pink-light);
+  color: var(--pink); font: inherit; font-size: 12px; font-weight: 700;
   cursor: pointer; transition: all .12s; max-width: 260px;
 }
-.tgl .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); flex-shrink: 0 }
+.tgl .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--pink); flex-shrink: 0 }
 .tgl .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
-.tgl:hover { border-color: var(--teal) }
+.tgl:hover { border-color: var(--pink) }
 .tgl.off { background: var(--surface-2); border-color: var(--border); color: var(--ink-3) }
 .tgl.off .dot { background: var(--border) }
 .tgl.off .nm { text-decoration: line-through }
@@ -297,7 +300,7 @@ details.instruct .instruct-body {
   background: var(--surface); color: var(--ink-2);
   font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer;
 }
-.mini:hover { border-color: var(--teal-mid); background: #fff }
+.mini:hover { border-color: var(--pink-mid); background: #fff }
 
 /* Ряд ответов + ряды медалей */
 .board-wrap { overflow-x: auto; padding: 0 14px 14px }
@@ -309,7 +312,7 @@ details.instruct .instruct-body {
   padding-right: 2px; font-size: 10.5px; font-weight: 800;
   letter-spacing: .06em; text-transform: uppercase;
 }
-.blabel.tov { color: var(--teal) }
+.blabel.tov { color: var(--pink) }
 .blabel.pa  { color: var(--indigo) }
 .bcell { flex: 1 1 0; min-width: var(--col-min); display: flex; justify-content: center }
 
@@ -349,7 +352,7 @@ details.instruct .instruct-body {
   font: inherit; font-size: 16px; cursor: pointer;
   transition: transform .1s, border-color .12s, background .12s;
 }
-.medal:hover { border-color: var(--teal-mid) }
+.medal:hover { border-color: var(--pink-mid) }
 .medal:active { transform: scale(.94) }
 .medal .pl { font-size: 16px; font-weight: 800; color: var(--ink) }
 .medal.set { background: var(--surface-2) }
@@ -379,8 +382,8 @@ details.instruct .instruct-body {
   border: 1px solid var(--border); background: var(--surface-2);
   font: inherit; font-size: 13px; font-weight: 700; color: var(--ink-2); cursor: pointer;
 }
-.pick-row button:hover { border-color: var(--teal-mid); background: #fff }
-.pick-row button.on { background: var(--teal); border-color: var(--teal); color: #fff }
+.pick-row button:hover { border-color: var(--pink-mid); background: #fff }
+.pick-row button.on { background: var(--pink); border-color: var(--pink); color: #fff }
 .pick-row button.clr { color: var(--ink-3) }
 .pick-row button.clr:hover { border-color: var(--rose-border); background: var(--rose-light); color: var(--rose) }
 
@@ -391,7 +394,7 @@ details.instruct .instruct-body {
   flex-shrink: 0; padding: 3px 10px; border-radius: var(--radius-xs);
   font-size: 10.5px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase;
 }
-.pod-lbl.tov { background: var(--teal); color: #fff }
+.pod-lbl.tov { background: var(--pink); color: #fff }
 .pod-lbl.pa { background: var(--indigo); color: #fff }
 .pod-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px }
 .pod-empty { color: var(--ink-3); font-style: italic; font-size: 12.5px }
@@ -412,13 +415,13 @@ details.instruct .instruct-body {
 .pod-arrow { color: var(--ink-3); font-weight: 700 }
 
 textarea {
-  width: 100%; min-height: 78px; resize: vertical;
+  width: 100%; min-height: 120px; resize: vertical;
   border: 1.5px solid var(--border); border-radius: var(--radius-sm);
   padding: 10px 13px; font-size: 14px; font-family: inherit; line-height: 1.6;
   color: var(--ink); background: var(--surface-2);
   transition: border-color .15s, box-shadow .15s;
 }
-textarea:focus { outline: none; border-color: var(--teal); background: #fff; box-shadow: 0 0 0 3px rgba(13,148,136,.1) }
+textarea:focus { outline: none; border-color: var(--pink); background: #fff; box-shadow: 0 0 0 3px rgba(219,39,119,.12) }
 
 .json-head {
   background: #1c1917; color: #e7e5e4; padding: 10px 16px;
@@ -426,13 +429,13 @@ textarea:focus { outline: none; border-color: var(--teal); background: #fff; box
 }
 .json-head .btns { margin-left: auto; display: flex; gap: 6px }
 .copy-btn {
-  background: var(--teal); color: #fff; border: none; border-radius: var(--radius-xs);
+  background: var(--pink); color: #fff; border: none; border-radius: var(--radius-xs);
   padding: 5px 14px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
   transition: background .12s, transform .08s;
 }
-.copy-btn:hover { background: #0f766e }
+.copy-btn:hover { background: #be185d }
 .copy-btn:active { transform: scale(.97) }
-.copy-btn.ok { background: #16a34a }
+.copy-btn.ok { background: #9d174d }
 .copy-btn.ghost { background: #44403c }
 .copy-btn.ghost:hover { background: #57534e }
 pre#json-out {
@@ -446,13 +449,6 @@ pre#json-out {
 </head>
 <body>
 <div class="page">
-
-  <div class="card" id="instruct-card" style="display:none">
-    <details class="instruct">
-      <summary>⚙ Инструкция</summary>
-      <div class="instruct-body" id="instruct-body"></div>
-    </details>
-  </div>
 
   <div class="card">
     <div class="card-head"><span>💬</span> Диалог</div>
@@ -493,8 +489,17 @@ pre#json-out {
   </div>
 
   <div class="card">
-    <div class="card-head"><span>📝</span> Общий комментарий</div>
-    <div style="padding:14px 16px"><textarea id="comment" placeholder="Что важного не влезло в места: чем победитель лучше, за что штрафовали остальных…"></textarea></div>
+    <div class="card-head"><span>📝</span> Комментарии</div>
+    <div class="comments">
+      <div class="comment-col">
+        <div class="comment-lbl tov">ToV</div>
+        <textarea id="comment-tov" placeholder="Напишите плюсы, недостатки, восхищения и недовольства — всё, что думаете об ответах"></textarea>
+      </div>
+      <div class="comment-col">
+        <div class="comment-lbl pa">ПА</div>
+        <textarea id="comment-pa" placeholder="Напишите плюсы, недостатки, восхищения и недовольства — всё, что думаете об ответах"></textarea>
+      </div>
+    </div>
   </div>
 
   <div class="card">
@@ -584,12 +589,6 @@ var HIDDEN  = {};                       // slot -> true
 var RANKS   = { tov: {}, pa: {} };      // scale -> slot -> место 1..7
 var SCALES  = [{ key: 'tov', label: 'ToV' }, { key: 'pa', label: 'ПА' }];
 var MAX_PLACE = 7;
-
-/* ------------------------------ инструкция ---------------------------- */
-if (DATA.instruct) {
-  document.getElementById('instruct-card').style.display = '';
-  document.getElementById('instruct-body').textContent = DATA.instruct;
-}
 
 /* ------------------------------- диалог ------------------------------- */
 (function () {
@@ -771,7 +770,8 @@ document.getElementById('btn-reset').addEventListener('click', function () {
   RANKS = { tov: {}, pa: {} };
   render();
 });
-document.getElementById('comment').addEventListener('input', updateJson);
+document.getElementById('comment-tov').addEventListener('input', updateJson);
+document.getElementById('comment-pa').addEventListener('input', updateJson);
 
 /* --------------------------- шкала победителей ------------------------- */
 /* Места сортируются по возрастанию и сжимаются к первому: проставленные
@@ -885,7 +885,8 @@ function getResult() {
           models: g.items.map(function (a) { return a.model; })
         };
       }),
-      line: podiumText(scale)
+      line: podiumText(scale),
+      comment: document.getElementById('comment-' + scale).value.trim()
     };
   }
 
@@ -894,8 +895,7 @@ function getResult() {
     models: models,
     hidden: ANSWERS.filter(function (a) { return HIDDEN[a.slot]; }).map(function (a) { return a.slot; }),
     tov: scaleBlock('tov'),
-    pa: scaleBlock('pa'),
-    comment: document.getElementById('comment').value.trim()
+    pa: scaleBlock('pa')
   };
 }
 
@@ -948,14 +948,10 @@ def build_html(row):
                 query = turn["content"]
                 break
 
-    instruct = row.get("instruct")
-    instruct = str(instruct) if instruct else ""
-
     title = row.get("instruct_id") or row.get("id") or query[:60]
 
     data = {
         "title": str(title) if title else "",
-        "instruct": instruct,
         "dialog": dialog,
         "answers": collect_answers(row),
     }
@@ -986,7 +982,6 @@ def main(in1=None, in2=None, in3=None, mr_tables=None, **kwargs):
 
 _DEMO_ROW = {
     "instruct_id": "demo-1",
-    "instruct": "Отвечай дружелюбно, без канцелярита, не выдумывай личный опыт.",
     "query_1": "расскажи подробнее",
     "dialog_2": json.dumps([
         {"role": "user", "content": "расскажи лебединое озеро спящая красавица дон-кихот"},

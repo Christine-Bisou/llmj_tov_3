@@ -5,17 +5,16 @@
     model_1  .. model_7    — имена моделей (utf8)
     dialog_2               — диалог: [{"role": ..., "content": ...}, ...]
     dialog_1               — запасной диалог, если dialog_2 пуст
-    instruct               — системная инструкция (опционально)
-    query_1                — последний запрос пользователя (опционально)
+    instruct               — системная инструкция (опционально, свёрнута)
 
-Что умеет разметка:
-    * имя модели над ответом — кнопка: клик прячет/возвращает ответ;
-    * панель из 7 кнопок под ответами (прилипает к низу экрана) — то же самое,
-      выключенная модель гаснет;
-    * под каждым ответом два ряда мест 1..7 — отдельно для ToV и для ПА,
-      места могут повторяться;
-    * снизу автоматически строятся две шкалы победителей: места сортируются
-      по возрастанию и сжимаются к первому, даже если первое не проставлено
+Как выглядит страница:
+    * диалог: пользователь справа, ассистент слева;
+    * над ответами — ряд кнопок с именами моделей, кнопка гасит свой ответ;
+    * ответы стоят в один ряд, по колонке на модель, markdown отрисован;
+    * под ответами два ряда медалей — ToV и ПА; медаль стоит ровно по центру
+      своей колонки, клик открывает выбор места 1..7 (места могут повторяться);
+    * ниже сами собой строятся две шкалы победителей: места сортируются по
+      возрастанию и сжимаются к первому, даже если первое не проставлено
       (например 3, 2, 5 → 1-е, 2-е, 3-е места);
     * общий комментарий и один итоговый JSON с кнопками «скопировать»/«скачать».
 
@@ -180,10 +179,15 @@ _HTML_HEAD = r"""<!DOCTYPE html>
   --amber:        #d97706;
   --amber-light:  #fef3c7;
   --amber-border: #fde68a;
+  --gold:         #d4a017;
+  --silver:       #9aa0a6;
+  --bronze:       #b06a2c;
   --radius:    14px;
   --radius-sm:  8px;
   --radius-xs:  5px;
   --shadow:    0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+  --label-w:   58px;
+  --col-min:  230px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0 }
 body {
@@ -194,70 +198,62 @@ body {
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
 }
-.page { max-width: 1220px; margin: 0 auto; padding: 26px 22px 190px }
-
-.page-eyebrow {
-  font-size: 11px; font-weight: 700; letter-spacing: .1em;
-  text-transform: uppercase; color: var(--ink-3); margin-bottom: 10px;
-}
-.meta-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 18px; align-items: center }
-.chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 5px 13px; border-radius: 999px;
-  font-size: 12px; font-weight: 500;
-  background: var(--surface); border: 1px solid var(--border);
-  color: var(--ink-2); box-shadow: var(--shadow); white-space: nowrap;
-}
-.chip b { color: var(--ink); font-weight: 700 }
-.chip.hi { background: var(--teal-light); border-color: var(--teal-border); color: var(--teal) }
+.page { max-width: 1600px; margin: 0 auto; padding: 20px 20px 60px }
 
 .card {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow);
-  margin-bottom: 18px; overflow: hidden;
+  margin-bottom: 16px; overflow: hidden;
 }
 .card-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 11px 18px; border-bottom: 1px solid var(--border-light);
+  padding: 10px 16px; border-bottom: 1px solid var(--border-light);
   font-size: 11px; font-weight: 700; letter-spacing: .08em;
   text-transform: uppercase; color: var(--ink-3); background: var(--surface-2);
 }
 .card-head .right { margin-left: auto; display: flex; gap: 6px; text-transform: none; letter-spacing: 0 }
 
 details.instruct summary {
-  cursor: pointer; padding: 11px 18px; background: var(--surface-2);
+  cursor: pointer; padding: 10px 16px; background: var(--surface-2);
   font-size: 11px; font-weight: 700; letter-spacing: .08em;
   text-transform: uppercase; color: var(--ink-3); user-select: none;
 }
 details.instruct[open] summary { border-bottom: 1px solid var(--border-light) }
 details.instruct .instruct-body {
-  padding: 14px 18px; white-space: pre-wrap; font-size: 13px;
-  line-height: 1.6; color: var(--ink-2); max-height: 320px; overflow-y: auto;
+  padding: 14px 16px; white-space: pre-wrap; font-size: 13px;
+  line-height: 1.6; color: var(--ink-2); max-height: 300px; overflow-y: auto;
 }
 
-/* Диалог */
-.dialog-turns { padding: 18px 20px; display: flex; flex-direction: column; gap: 13px }
-.turn { display: flex; flex-direction: column; gap: 4px; align-items: flex-start }
+/* Диалог: ассистент слева, пользователь справа */
+.dialog-turns { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px }
+.turn { display: flex; flex-direction: column; gap: 4px }
+.turn.assistant { align-items: flex-start }
+.turn.user { align-items: flex-end }
 .turn-who {
   font-size: 10px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .08em; padding: 0 4px;
 }
-.turn-who.user { color: var(--indigo) }
-.turn-who.assistant { color: var(--teal) }
+.turn.user .turn-who { color: var(--indigo) }
+.turn.assistant .turn-who { color: var(--teal) }
 .bubble {
-  display: inline-block; max-width: 88%;
-  padding: 11px 16px; border-radius: 14px;
+  display: inline-block; max-width: 78%;
+  padding: 10px 15px; border-radius: 14px;
   font-size: 14px; line-height: 1.7; word-break: break-word;
+}
+.turn.user .bubble {
+  background: var(--indigo-light); border: 1px solid var(--indigo-border);
+  border-top-right-radius: 3px; white-space: pre-wrap; text-align: left;
+}
+.turn.assistant .bubble {
+  background: var(--teal-light); border: 1px solid var(--teal-border);
   border-top-left-radius: 3px;
 }
-.turn.user .bubble { background: var(--indigo-light); border: 1px solid var(--indigo-border); white-space: pre-wrap }
-.turn.assistant .bubble { background: var(--teal-light); border: 1px solid var(--teal-border) }
 .turn.last-user .bubble { box-shadow: 0 0 0 3px rgba(79,70,229,.15) }
 .no-turns { color: var(--ink-3); font-style: italic; font-size: 13px; padding: 4px 0 }
 
 /* Markdown */
-.md h2, .md h3 { font-size: 14px; font-weight: 700; margin: 12px 0 5px; color: var(--ink) }
-.md h2:first-child, .md h3:first-child { margin-top: 0 }
+.md h1, .md h2, .md h3 { font-size: 14px; font-weight: 700; margin: 12px 0 5px; color: var(--ink) }
+.md h1:first-child, .md h2:first-child, .md h3:first-child { margin-top: 0 }
 .md p { margin: 0 0 8px }
 .md p:last-child { margin-bottom: 0 }
 .md ul, .md ol { margin: 4px 0 8px 18px; display: flex; flex-direction: column; gap: 3px }
@@ -269,110 +265,26 @@ details.instruct .instruct-body {
   background: var(--surface-2); border: 1px solid var(--border);
   border-radius: 3px; padding: 0 4px; font-family: ui-monospace, monospace; font-size: 12.5px;
 }
+.md pre {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-xs); padding: 8px 10px; margin: 6px 0;
+  overflow-x: auto; font-family: ui-monospace, monospace; font-size: 12.5px; line-height: 1.5;
+}
+.md pre code { background: none; border: none; padding: 0 }
+.md blockquote {
+  margin: 6px 0; padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--border); color: var(--ink-2);
+}
 .md a { color: var(--teal) }
 
-.divider {
-  display: flex; align-items: center; gap: 10px; margin: 24px 0 14px;
-  font-size: 11px; font-weight: 700; letter-spacing: .09em;
-  text-transform: uppercase; color: var(--ink-3);
-}
-.divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--border) }
-
-/* Ответы */
-.answers { display: flex; flex-direction: column; gap: 14px }
-.answers.cols2 { display: grid; grid-template-columns: 1fr 1fr; align-items: start }
-@media (max-width: 900px) { .answers.cols2 { grid-template-columns: 1fr } }
-
-.ans {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
-}
-.ans-head {
-  display: flex; align-items: center; gap: 9px;
-  padding: 9px 14px; background: var(--surface-2);
-  border-bottom: 1px solid var(--border-light);
-}
-.ans-num {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; border-radius: 50%;
-  background: var(--ink); color: #fff; font-size: 11px; font-weight: 800; flex-shrink: 0;
-}
-.model-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 12px; border-radius: 999px;
-  border: 1px solid var(--teal-border); background: var(--teal-light);
-  color: var(--teal); font: inherit; font-size: 12.5px; font-weight: 700;
-  cursor: pointer; transition: background .12s, border-color .12s, color .12s;
-  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.model-btn:hover { border-color: var(--teal); background: #fff }
-.model-btn::after { content: '✕'; font-size: 10px; opacity: .55 }
-.ans-head .place-tags { margin-left: auto; display: flex; gap: 5px; flex-shrink: 0 }
-.place-tag {
-  display: none; align-items: center; gap: 4px;
-  padding: 2px 9px; border-radius: 999px;
-  font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase;
-}
-.place-tag.on { display: inline-flex }
-.place-tag.tov { background: var(--teal-light); color: var(--teal); border: 1px solid var(--teal-border) }
-.place-tag.pa  { background: var(--indigo-light); color: var(--indigo); border: 1px solid var(--indigo-border) }
-
-.ans-body { padding: 14px 16px; font-size: 14px; line-height: 1.7 }
-.ans-ranks {
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 10px 14px 12px; border-top: 1px solid var(--border-light); background: var(--surface-2);
-}
-.rank-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap }
-.rank-lbl {
-  width: 42px; flex-shrink: 0;
-  font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
-}
-.rank-lbl.tov { color: var(--teal) }
-.rank-lbl.pa { color: var(--indigo) }
-.rk {
-  min-width: 28px; padding: 3px 0 4px;
-  border: 1px solid var(--border); border-radius: var(--radius-xs);
-  background: var(--surface); color: var(--ink-2);
-  font: inherit; font-size: 12px; font-weight: 700; line-height: 1.2;
-  text-align: center; cursor: pointer; transition: all .12s;
-}
-.rk:hover { border-color: var(--teal-mid) }
-.rank-row.tov .rk.on { background: var(--teal); border-color: var(--teal); color: #fff }
-.rank-row.pa  .rk.on { background: var(--indigo); border-color: var(--indigo); color: #fff }
-.rk.clr { color: var(--ink-3); min-width: 26px }
-.rk.clr:hover { border-color: var(--rose-border); background: var(--rose-light); color: var(--rose) }
-
-/* Выключенный ответ */
-.ans.off { opacity: .5 }
-.ans.off .ans-body, .ans.off .ans-ranks { display: none }
-.ans.off .model-btn {
-  background: var(--surface); border-color: var(--border);
-  color: var(--ink-3); text-decoration: line-through;
-}
-.ans.off .model-btn::after { content: '↩' }
-.ans.off .ans-num { background: var(--border); color: var(--ink-3) }
-
-/* Панель моделей снизу */
-.dock {
-  position: sticky; bottom: 0; z-index: 40;
-  margin: 16px -22px -190px; padding: 10px 22px 12px;
-  background: rgba(255,255,255,.94);
-  backdrop-filter: blur(8px);
-  border-top: 1px solid var(--border);
-  box-shadow: 0 -4px 14px rgba(0,0,0,.05);
-}
-.dock-inner { max-width: 1220px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px }
-.dock-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px }
-.dock-lbl {
-  font-size: 10px; font-weight: 800; letter-spacing: .07em;
-  text-transform: uppercase; color: var(--ink-3); margin-right: 4px;
-}
+/* Панель включения моделей */
+.toggles { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; align-items: center }
 .tgl {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 5px 12px; border-radius: 999px;
   border: 1px solid var(--teal-border); background: var(--teal-light);
   color: var(--teal); font: inherit; font-size: 12px; font-weight: 700;
-  cursor: pointer; transition: all .12s; max-width: 240px;
+  cursor: pointer; transition: all .12s; max-width: 260px;
 }
 .tgl .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); flex-shrink: 0 }
 .tgl .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
@@ -386,6 +298,91 @@ details.instruct .instruct-body {
   font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer;
 }
 .mini:hover { border-color: var(--teal-mid); background: #fff }
+
+/* Ряд ответов + ряды медалей */
+.board-wrap { overflow-x: auto; padding: 0 14px 14px }
+.board { min-width: 100%; display: flex; flex-direction: column; gap: 10px }
+.brow { display: flex; gap: 10px; align-items: stretch }
+.blabel {
+  flex: 0 0 var(--label-w); width: var(--label-w);
+  display: flex; align-items: center; justify-content: flex-end;
+  padding-right: 2px; font-size: 10.5px; font-weight: 800;
+  letter-spacing: .06em; text-transform: uppercase;
+}
+.blabel.tov { color: var(--teal) }
+.blabel.pa  { color: var(--indigo) }
+.bcell { flex: 1 1 0; min-width: var(--col-min); display: flex; justify-content: center }
+
+.ans {
+  flex: 1 1 0; min-width: var(--col-min);
+  display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden;
+}
+.ans-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: var(--surface-2);
+  border-bottom: 1px solid var(--border-light);
+}
+.ans-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--ink); color: #fff; font-size: 10.5px; font-weight: 800; flex-shrink: 0;
+}
+.ans-name {
+  font-size: 12.5px; font-weight: 700; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ans-body {
+  padding: 12px 14px; font-size: 13.5px; line-height: 1.65;
+  max-height: 62vh; overflow-y: auto;
+}
+.ans.off { display: none }
+.bcell.off { display: none }
+
+/* Медали */
+.medal {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; border-radius: 50%;
+  border: 2px solid var(--border); background: var(--surface);
+  font: inherit; font-size: 16px; cursor: pointer;
+  transition: transform .1s, border-color .12s, background .12s;
+}
+.medal:hover { border-color: var(--teal-mid) }
+.medal:active { transform: scale(.94) }
+.medal .pl { font-size: 16px; font-weight: 800; color: var(--ink) }
+.medal.set { background: var(--surface-2) }
+.medal.p1 { border-color: var(--gold);   background: #fffaf0 }
+.medal.p1 .pl { color: var(--gold) }
+.medal.p2 { border-color: var(--silver); background: #f7f8f9 }
+.medal.p2 .pl { color: var(--silver) }
+.medal.p3 { border-color: var(--bronze); background: #fdf6f0 }
+.medal.p3 .pl { color: var(--bronze) }
+.medal.pn { border-color: var(--ink-3) }
+
+/* Всплывашка выбора места */
+.pick {
+  position: absolute; z-index: 80; display: none;
+  padding: 8px; border-radius: var(--radius-sm);
+  background: var(--surface); border: 1px solid var(--border);
+  box-shadow: 0 10px 26px rgba(0,0,0,.14);
+}
+.pick.on { display: block }
+.pick-lbl {
+  font-size: 10px; font-weight: 800; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-3); margin-bottom: 6px; text-align: center;
+}
+.pick-row { display: flex; gap: 4px }
+.pick-row button {
+  width: 30px; height: 30px; border-radius: var(--radius-xs);
+  border: 1px solid var(--border); background: var(--surface-2);
+  font: inherit; font-size: 13px; font-weight: 700; color: var(--ink-2); cursor: pointer;
+}
+.pick-row button:hover { border-color: var(--teal-mid); background: #fff }
+.pick-row button.on { background: var(--teal); border-color: var(--teal); color: #fff }
+.pick-row button.clr { color: var(--ink-3) }
+.pick-row button.clr:hover { border-color: var(--rose-border); background: var(--rose-light); color: var(--rose) }
 
 /* Шкалы победителей */
 .podium { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px }
@@ -415,7 +412,7 @@ details.instruct .instruct-body {
 .pod-arrow { color: var(--ink-3); font-weight: 700 }
 
 textarea {
-  width: 100%; min-height: 80px; resize: vertical;
+  width: 100%; min-height: 78px; resize: vertical;
   border: 1.5px solid var(--border); border-radius: var(--radius-sm);
   padding: 10px 13px; font-size: 14px; font-family: inherit; line-height: 1.6;
   color: var(--ink); background: var(--surface-2);
@@ -424,7 +421,7 @@ textarea {
 textarea:focus { outline: none; border-color: var(--teal); background: #fff; box-shadow: 0 0 0 3px rgba(13,148,136,.1) }
 
 .json-head {
-  background: #1c1917; color: #e7e5e4; padding: 10px 18px;
+  background: #1c1917; color: #e7e5e4; padding: 10px 16px;
   font-size: 12px; font-weight: 700; display: flex; align-items: center; gap: 8px;
 }
 .json-head .btns { margin-left: auto; display: flex; gap: 6px }
@@ -439,9 +436,9 @@ textarea:focus { outline: none; border-color: var(--teal); background: #fff; box
 .copy-btn.ghost { background: #44403c }
 .copy-btn.ghost:hover { background: #57534e }
 pre#json-out {
-  padding: 14px 18px; font-size: 12px; line-height: 1.65;
+  padding: 14px 16px; font-size: 12px; line-height: 1.65;
   white-space: pre-wrap; word-break: break-word;
-  background: #fafaf9; max-height: 320px; overflow-y: auto;
+  background: #fafaf9; max-height: 300px; overflow-y: auto;
   border-top: 1px solid var(--border-light);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -449,8 +446,6 @@ pre#json-out {
 </head>
 <body>
 <div class="page">
-  <div class="page-eyebrow">Сравнение 7 ответов</div>
-  <div class="meta-strip" id="meta-strip"></div>
 
   <div class="card" id="instruct-card" style="display:none">
     <details class="instruct">
@@ -464,17 +459,26 @@ pre#json-out {
     <div class="dialog-turns" id="dialog-turns"></div>
   </div>
 
-  <div class="divider">Ответы</div>
-  <div class="card-head" style="border:1px solid var(--border);border-radius:var(--radius);margin-bottom:12px">
-    <span id="ans-counter">0 из 0 показано</span>
-    <span class="right">
-      <button class="mini" id="btn-cols">В две колонки</button>
-      <button class="mini" id="btn-md">Markdown: вкл</button>
-    </span>
+  <div class="card">
+    <div class="card-head">
+      <span>📦</span> Ответы
+      <span class="right">
+        <span id="ans-counter" style="font-size:11px;color:var(--ink-3);align-self:center"></span>
+        <button class="mini" id="btn-all">Показать все</button>
+        <button class="mini" id="btn-none">Скрыть все</button>
+        <button class="mini" id="btn-reset">Сбросить места</button>
+      </span>
+    </div>
+    <div class="toggles" id="toggles"></div>
+    <div class="board-wrap">
+      <div class="board">
+        <div class="brow" id="row-answers"><div class="blabel"></div></div>
+        <div class="brow" id="row-tov"><div class="blabel tov">ToV</div></div>
+        <div class="brow" id="row-pa"><div class="blabel pa">ПА</div></div>
+      </div>
+    </div>
   </div>
-  <div class="answers" id="answers"></div>
 
-  <div class="divider">Победители</div>
   <div class="card">
     <div class="podium">
       <div class="pod-row">
@@ -503,17 +507,11 @@ pre#json-out {
     </div>
     <pre id="json-out"></pre>
   </div>
+</div>
 
-  <div class="dock">
-    <div class="dock-inner">
-      <div class="dock-row" id="dock-models"><span class="dock-lbl">Модели</span></div>
-      <div class="dock-row">
-        <button class="mini" id="btn-all">Показать все</button>
-        <button class="mini" id="btn-none">Скрыть все</button>
-        <button class="mini" id="btn-reset">Сбросить места</button>
-      </div>
-    </div>
-  </div>
+<div class="pick" id="pick">
+  <div class="pick-lbl" id="pick-lbl"></div>
+  <div class="pick-row" id="pick-row"></div>
 </div>
 """
 
@@ -530,6 +528,7 @@ function inlineFmt(s) {
   s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
   s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
   return s;
 }
@@ -537,14 +536,24 @@ function inlineFmt(s) {
 function mdToHtml(md) {
   if (!md) return '';
   var lines = String(md).split('\n');
-  var out = [], listTag = null;
+  var out = [], listTag = null, inCode = false, codeBuf = [];
 
   function closeList() { if (listTag) { out.push('</' + listTag + '>'); listTag = null; } }
   function openList(tag) { if (listTag !== tag) { closeList(); out.push('<' + tag + '>'); listTag = tag; } }
 
   for (var i = 0; i < lines.length; i++) {
-    var line = esc(lines[i].replace(/\s+$/, ''));
+    var raw = lines[i].replace(/\s+$/, '');
+
+    if (/^\s*```/.test(raw)) {
+      if (inCode) { out.push('<pre><code>' + esc(codeBuf.join('\n')) + '</code></pre>'); codeBuf = []; inCode = false; }
+      else { closeList(); inCode = true; }
+      continue;
+    }
+    if (inCode) { codeBuf.push(raw); continue; }
+
+    var line = esc(raw);
     if (/^(---+|\*\*\*+|___+)$/.test(line.trim())) { closeList(); out.push('<hr>'); continue; }
+
     var hm = line.match(/^(#{1,6})\s+(.+)/);
     if (hm) {
       closeList();
@@ -552,47 +561,35 @@ function mdToHtml(md) {
       out.push('<' + tag + '>' + inlineFmt(hm[2]) + '</' + tag + '>');
       continue;
     }
+    var qm = line.match(/^\s*&gt;\s?(.*)/);
+    if (qm) { closeList(); out.push('<blockquote>' + inlineFmt(qm[1]) + '</blockquote>'); continue; }
+
     var om = line.match(/^\s*\d+[.)]\s+(.+)/);
     if (om) { openList('ol'); out.push('<li>' + inlineFmt(om[1]) + '</li>'); continue; }
     var um = line.match(/^\s*[-*•]\s+(.+)/);
     if (um) { openList('ul'); out.push('<li>' + inlineFmt(um[1]) + '</li>'); continue; }
+
     if (line.trim() === '') { closeList(); continue; }
     closeList();
     out.push('<p>' + inlineFmt(line) + '</p>');
   }
+  if (inCode && codeBuf.length) out.push('<pre><code>' + esc(codeBuf.join('\n')) + '</code></pre>');
   closeList();
   return out.join('\n');
 }
-
-function plain(t) { return '<div style="white-space:pre-wrap">' + esc(t) + '</div>'; }
 
 /* ------------------------------ состояние ----------------------------- */
 var ANSWERS = DATA.answers || [];
 var HIDDEN  = {};                       // slot -> true
 var RANKS   = { tov: {}, pa: {} };      // scale -> slot -> место 1..7
-var MD_ON   = true;
 var SCALES  = [{ key: 'tov', label: 'ToV' }, { key: 'pa', label: 'ПА' }];
+var MAX_PLACE = 7;
 
-/* ------------------------------- шапка -------------------------------- */
-(function () {
-  var strip = document.getElementById('meta-strip');
-  var chips = [];
-  if (DATA.title) chips.push({ text: DATA.title, hi: true });
-  chips.push({ text: '📦 ответов: ' + ANSWERS.length });
-  if (DATA.query) chips.push({ text: '❓ ' + DATA.query });
-  chips.forEach(function (c) {
-    var d = document.createElement('div');
-    d.className = 'chip' + (c.hi ? ' hi' : '');
-    d.textContent = c.text.length > 120 ? c.text.slice(0, 119) + '…' : c.text;
-    d.title = c.text;
-    strip.appendChild(d);
-  });
-
-  if (DATA.instruct) {
-    document.getElementById('instruct-card').style.display = '';
-    document.getElementById('instruct-body').textContent = DATA.instruct;
-  }
-})();
+/* ------------------------------ инструкция ---------------------------- */
+if (DATA.instruct) {
+  document.getElementById('instruct-card').style.display = '';
+  document.getElementById('instruct-body').textContent = DATA.instruct;
+}
 
 /* ------------------------------- диалог ------------------------------- */
 (function () {
@@ -613,114 +610,149 @@ var SCALES  = [{ key: 'tov', label: 'ToV' }, { key: 'pa', label: 'ПА' }];
   }).join('');
 })();
 
-/* ------------------------------- ответы ------------------------------- */
+/* ------------------- кнопки моделей, ответы, медали ------------------- */
 (function () {
-  var wrap = document.getElementById('answers');
-  if (!ANSWERS.length) { wrap.innerHTML = '<div class="card"><div style="padding:16px" class="no-turns">Ответов нет</div></div>'; return; }
+  var toggles = document.getElementById('toggles');
+  var rowAns  = document.getElementById('row-answers');
+  var rows    = { tov: document.getElementById('row-tov'), pa: document.getElementById('row-pa') };
+
+  if (!ANSWERS.length) {
+    rowAns.insertAdjacentHTML('beforeend', '<div class="bcell no-turns">Ответов нет</div>');
+    return;
+  }
 
   ANSWERS.forEach(function (a) {
+    // кнопка включения
+    var t = document.createElement('button');
+    t.type = 'button';
+    t.className = 'tgl';
+    t.id = 'tgl-' + a.slot;
+    t.title = a.model;
+    var dot = document.createElement('span');
+    dot.className = 'dot';
+    var nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = a.num + '. ' + a.model;
+    t.appendChild(dot);
+    t.appendChild(nm);
+    t.addEventListener('click', function () { toggle(a.slot); });
+    toggles.appendChild(t);
+
+    // колонка ответа
     var card = document.createElement('div');
     card.className = 'ans';
     card.id = 'ans-' + a.slot;
 
     var head = document.createElement('div');
     head.className = 'ans-head';
-
     var num = document.createElement('span');
     num.className = 'ans-num';
     num.textContent = a.num;
+    var name = document.createElement('span');
+    name.className = 'ans-name';
+    name.textContent = a.model;
+    name.title = a.model;
     head.appendChild(num);
-
-    var btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'model-btn';
-    btn.title = a.model + ' — клик, чтобы спрятать ответ';
-    btn.textContent = a.model;
-    btn.addEventListener('click', function () { toggle(a.slot); });
-    head.appendChild(btn);
-
-    var tags = document.createElement('span');
-    tags.className = 'place-tags';
-    SCALES.forEach(function (s) {
-      var tag = document.createElement('span');
-      tag.className = 'place-tag ' + s.key;
-      tag.id = 'tag-' + s.key + '-' + a.slot;
-      tags.appendChild(tag);
-    });
-    head.appendChild(tags);
+    head.appendChild(name);
     card.appendChild(head);
 
     var body = document.createElement('div');
     body.className = 'ans-body md';
-    body.id = 'body-' + a.slot;
     body.innerHTML = mdToHtml(a.content);
     card.appendChild(body);
+    rowAns.appendChild(card);
 
-    var ranks = document.createElement('div');
-    ranks.className = 'ans-ranks';
+    // медали под колонкой
     SCALES.forEach(function (s) {
-      var row = document.createElement('div');
-      row.className = 'rank-row ' + s.key;
+      var cell = document.createElement('div');
+      cell.className = 'bcell';
+      cell.id = 'cell-' + s.key + '-' + a.slot;
 
-      var lbl = document.createElement('span');
-      lbl.className = 'rank-lbl ' + s.key;
-      lbl.textContent = s.label;
-      row.appendChild(lbl);
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'medal';
+      b.id = 'medal-' + s.key + '-' + a.slot;
+      b.title = s.label + ' · ' + a.model + ' — выбрать место';
+      b.innerHTML = '<span class="pl">🏅</span>';
+      b.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        openPicker(s.key, a, b);
+      });
 
-      for (var p = 1; p <= 7; p++) {
-        (function (place) {
-          var b = document.createElement('button');
-          b.type = 'button';
-          b.className = 'rk';
-          b.dataset.scale = s.key;
-          b.dataset.slot = a.slot;
-          b.dataset.place = String(place);
-          b.textContent = place;
-          b.title = s.label + ': ' + place + '-е место';
-          b.addEventListener('click', function () { setRank(s.key, a.slot, place); });
-          row.appendChild(b);
-        })(p);
-      }
-
-      var clr = document.createElement('button');
-      clr.type = 'button';
-      clr.className = 'rk clr';
-      clr.textContent = '✕';
-      clr.title = 'Снять место';
-      clr.addEventListener('click', function () { setRank(s.key, a.slot, null); });
-      row.appendChild(clr);
-
-      ranks.appendChild(row);
+      cell.appendChild(b);
+      rows[s.key].appendChild(cell);
     });
-    card.appendChild(ranks);
-    wrap.appendChild(card);
   });
 })();
 
-/* ------------------------- панель моделей снизу ------------------------ */
-(function () {
-  var dock = document.getElementById('dock-models');
-  ANSWERS.forEach(function (a) {
-    var b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'tgl';
-    b.id = 'tgl-' + a.slot;
-    b.title = a.model;
-    var dot = document.createElement('span');
-    dot.className = 'dot';
-    var nm = document.createElement('span');
-    nm.className = 'nm';
-    nm.textContent = a.num + '. ' + a.model;
-    b.appendChild(dot);
-    b.appendChild(nm);
-    b.addEventListener('click', function () { toggle(a.slot); });
-    dock.appendChild(b);
+/* ---------------------------- выбор места ----------------------------- */
+var PICK = document.getElementById('pick');
+var PICK_LBL = document.getElementById('pick-lbl');
+var PICK_ROW = document.getElementById('pick-row');
+var pickCtx = null;
+
+function openPicker(scale, answer, anchor) {
+  if (pickCtx && pickCtx.scale === scale && pickCtx.slot === answer.slot && PICK.classList.contains('on')) {
+    closePicker();
+    return;
+  }
+  pickCtx = { scale: scale, slot: answer.slot };
+  PICK_LBL.textContent = (scale === 'tov' ? 'ToV' : 'ПА') + ' · ' + answer.model;
+  PICK_ROW.textContent = '';
+
+  var current = RANKS[scale][answer.slot];
+  for (var p = 1; p <= MAX_PLACE; p++) {
+    (function (place) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = place;
+      if (current === place) b.className = 'on';
+      b.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        setRank(scale, answer.slot, place);
+        closePicker();
+      });
+      PICK_ROW.appendChild(b);
+    })(p);
+  }
+  var clr = document.createElement('button');
+  clr.type = 'button';
+  clr.className = 'clr';
+  clr.textContent = '✕';
+  clr.title = 'Снять место';
+  clr.addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    setRank(scale, answer.slot, null);
+    closePicker();
   });
-})();
+  PICK_ROW.appendChild(clr);
+
+  PICK.classList.add('on');
+  var r = anchor.getBoundingClientRect();
+  var w = PICK.offsetWidth, h = PICK.offsetHeight;
+  var left = r.left + window.scrollX + r.width / 2 - w / 2;
+  left = Math.max(8, Math.min(left, window.scrollX + document.documentElement.clientWidth - w - 8));
+  var top = r.bottom + window.scrollY + 8;
+  if (r.bottom + h + 16 > window.innerHeight) top = r.top + window.scrollY - h - 8;
+  PICK.style.left = left + 'px';
+  PICK.style.top = top + 'px';
+}
+
+function closePicker() {
+  PICK.classList.remove('on');
+  pickCtx = null;
+}
+
+document.addEventListener('click', function (ev) {
+  if (PICK.classList.contains('on') && !PICK.contains(ev.target)) closePicker();
+});
+document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') closePicker(); });
+window.addEventListener('resize', closePicker);
 
 /* ------------------------------ действия ------------------------------ */
 function toggle(slot) {
   if (HIDDEN[slot]) delete HIDDEN[slot]; else HIDDEN[slot] = true;
+  closePicker();
   render();
 }
 
@@ -738,18 +770,6 @@ document.getElementById('btn-none').addEventListener('click', function () {
 document.getElementById('btn-reset').addEventListener('click', function () {
   RANKS = { tov: {}, pa: {} };
   render();
-});
-document.getElementById('btn-cols').addEventListener('click', function () {
-  var on = document.getElementById('answers').classList.toggle('cols2');
-  this.textContent = on ? 'В одну колонку' : 'В две колонки';
-});
-document.getElementById('btn-md').addEventListener('click', function () {
-  MD_ON = !MD_ON;
-  this.textContent = 'Markdown: ' + (MD_ON ? 'вкл' : 'выкл');
-  ANSWERS.forEach(function (a) {
-    var el = document.getElementById('body-' + a.slot);
-    el.innerHTML = MD_ON ? mdToHtml(a.content) : plain(a.content);
-  });
 });
 document.getElementById('comment').addEventListener('input', updateJson);
 
@@ -824,20 +844,17 @@ function render() {
   ANSWERS.forEach(function (a) {
     var off = !!HIDDEN[a.slot];
     if (!off) shown++;
+
     document.getElementById('ans-' + a.slot).classList.toggle('off', off);
     var tgl = document.getElementById('tgl-' + a.slot);
     if (tgl) tgl.classList.toggle('off', off);
 
     SCALES.forEach(function (s) {
-      var tag = document.getElementById('tag-' + s.key + '-' + a.slot);
+      document.getElementById('cell-' + s.key + '-' + a.slot).classList.toggle('off', off);
+      var b = document.getElementById('medal-' + s.key + '-' + a.slot);
       var p = RANKS[s.key][a.slot];
-      tag.classList.toggle('on', !!p);
-      tag.textContent = s.label + ' ' + (p || '');
-    });
-
-    document.querySelectorAll('#ans-' + a.slot + ' .rk').forEach(function (b) {
-      if (!b.dataset.place) return;
-      b.classList.toggle('on', RANKS[b.dataset.scale][a.slot] === Number(b.dataset.place));
+      b.className = 'medal' + (p ? ' set p' + (p <= 3 ? p : 'n') : '');
+      b.querySelector('.pl').textContent = p ? p : '🏅';
     });
   });
 
@@ -874,7 +891,6 @@ function getResult() {
 
   return {
     title: DATA.title || null,
-    query: DATA.query || null,
     models: models,
     hidden: ANSWERS.filter(function (a) { return HIDDEN[a.slot]; }).map(function (a) { return a.slot; }),
     tov: scaleBlock('tov'),
@@ -939,7 +955,6 @@ def build_html(row):
 
     data = {
         "title": str(title) if title else "",
-        "query": query,
         "instruct": instruct,
         "dialog": dialog,
         "answers": collect_answers(row),
@@ -990,9 +1005,12 @@ _DEMO_ROW = {
 }
 for _i in range(1, 8):
     _DEMO_ROW["answer_%d" % _i] = (
-        "Вариант **%d**.\n\n"
-        "- Первый акт: знакомство с героями\n"
-        "- Второй акт: сцена у озера\n\n"
+        "## Вариант %d\n\n"
+        "Если коротко, то сюжет держится на трёх сценах.\n\n"
+        "- **Первый акт** — знакомство с героями\n"
+        "- **Второй акт** — сцена у озера\n"
+        "- Третий акт — бал и развязка\n\n"
+        "> Музыка Чайковского здесь работает как отдельный герой.\n\n"
         "Если интересно, могу разобрать *музыкальные темы* по актам." % _i
     )
 

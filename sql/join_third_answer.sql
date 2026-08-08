@@ -71,14 +71,16 @@ $third = (
 -- и видны по NULL в model_3, а не пропадают молча.
 $joined = (
     SELECT
-        a.* WITHOUT if exists a._other, a.key_dialog, a.key_user,
-
         b.vendor            AS model_3,
         b.answer            AS answer_3,
         b.row_id            AS row_id_3,
         b.account           AS account_3,
         b.s3_page_source    AS s3_page_source_3,
-        b.answer_time       AS answer_time_3
+        b.answer_time       AS answer_time_3,
+
+        -- WITHOUT забирает список колонок через запятую, поэтому звёздочка
+        -- с ним обязана быть последней в SELECT
+        a.* WITHOUT if exists a._other, a.key_dialog, a.key_user
     FROM (SELECT * FROM $pairs WHERE join_key != '') AS a
     LEFT JOIN (SELECT * FROM $third WHERE join_key != '') AS b ON a.join_key == b.join_key
 );

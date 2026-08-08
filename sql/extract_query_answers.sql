@@ -114,6 +114,7 @@ SELECT
     $str(p.output, 's3_page_source')        AS s3_page_source,
     $str(p.output, 'hitrenimals_uuid')      AS hitrenimals_uuid,
 
-    Yson::ConvertToDouble(Yson::Lookup($node(p.output), 'timings.query_sent')) AS query_sent,
-    Yson::ConvertToDouble(Yson::Lookup($node(p.output), 'timings.answer_end')) AS answer_time
+    -- вложенный ключ — только через YPath: Yson::Lookup берёт одно имя, не путь
+    Yson::ConvertToDouble(Yson::YPath($node(p.output), '/timings/query_sent')) AS query_sent,
+    Yson::ConvertToDouble(Yson::YPath($node(p.output), '/timings/answer_end')) AS answer_time
 FROM $parsed AS p;

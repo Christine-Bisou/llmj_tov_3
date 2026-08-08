@@ -282,6 +282,17 @@ body {
   border-left: 3px solid var(--border); color: var(--ink-2);
 }
 .md a { color: var(--pink) }
+.md-table-wrap { overflow-x: auto; margin: 8px 0; -webkit-overflow-scrolling: touch }
+.md-table-wrap::-webkit-scrollbar { height: 6px }
+.md-table-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px }
+.md table { border-collapse: collapse; width: 100%; font-size: 12.5px; line-height: 1.5 }
+.md th, .md td {
+  border: 1px solid var(--border); padding: 5px 7px;
+  text-align: left; vertical-align: top;
+  min-width: 52px; overflow-wrap: break-word;
+}
+.md th { background: var(--pink-light); color: var(--ink); font-weight: 700 }
+.md tbody tr:nth-child(even) { background: var(--surface-2) }
 
 /* Панель включения моделей */
 .toggles { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; align-items: center }
@@ -532,19 +543,90 @@ function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+var MD_REFS = {};                       // ссылки вида [1]: https://... из текущего текста
+
 function inlineFmt(s) {
   s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/\[([^\]]+)\]\[([^\]]*)\]/g, function (m, text, id) {
+    var url = MD_REFS[(id || text).trim().toLowerCase()];
+    return url ? '<a href="' + url + '" target="_blank" rel="noopener">' + text + '</a>' : m;
+  });
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
   s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
   return s;
 }
 
+/* ------------------------------- таблицы ------------------------------ */
+/* Ряд режем по «|», крайние палки не обязательны, «\|» — просто символ. */
+function splitRow(raw) {
+  var s = raw.trim().replace(/^\|/, '').replace(/\|$/, '');
+  var cells = [], cur = '';
+  for (var i = 0; i < s.length; i++) {
+    var ch = s.charAt(i);
+    if (ch === '\\' && s.charAt(i + 1) === '|') { cur += '|'; i++; continue; }
+    if (ch === '|') { cells.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  cells.push(cur);
+  return cells.map(function (c) { return c.trim(); });
+}
+
+function isTableRow(raw) {
+  return raw.indexOf('|') >= 0 && splitRow(raw).length >= 2;
+}
+
+/* Строка-разделитель ---|:---:|---: задаёт выравнивание колонок. */
+function tableAligns(raw) {
+  if (!raw || raw.indexOf('|') < 0) return null;
+  var cells = splitRow(raw);
+  if (cells.length < 2) return null;
+  var aligns = [];
+  for (var i = 0; i < cells.length; i++) {
+    var c = cells[i];
+    if (!/^:?-+:?$/.test(c)) return null;
+    var l = c.charAt(0) === ':', r = c.charAt(c.length - 1) === ':';
+    aligns.push(l && r ? 'center' : (r ? 'right' : (l ? 'left' : '')));
+  }
+  return aligns;
+}
+
+function tableCell(tag, text, align) {
+  var a = align ? ' style="text-align:' + align + '"' : '';
+  return '<' + tag + a + '>' + inlineFmt(esc(text || '')) + '</' + tag + '>';
+}
+
+function renderTable(head, aligns, body) {
+  var ncol = Math.max(head.length, aligns.length), c, r;
+  var th = [];
+  for (c = 0; c < ncol; c++) th.push(tableCell('th', head[c], aligns[c]));
+  var rows = [];
+  for (r = 0; r < body.length; r++) {
+    var td = [];
+    for (c = 0; c < ncol; c++) td.push(tableCell('td', body[r][c], aligns[c]));
+    rows.push('<tr>' + td.join('') + '</tr>');
+  }
+  return '<div class="md-table-wrap"><table><thead><tr>' + th.join('') + '</tr></thead>'
+       + (rows.length ? '<tbody>' + rows.join('') + '</tbody>' : '')
+       + '</table></div>';
+}
+
 function mdToHtml(md) {
   if (!md) return '';
   var lines = String(md).split('\n');
   var out = [], listTag = null, inCode = false, codeBuf = [];
+
+  /* Сноски [1]: https://... собираем заранее и в текст не пускаем. */
+  MD_REFS = {};
+  var skip = {};
+  for (var d = 0; d < lines.length; d++) {
+    var dm = lines[d].match(/^\s{0,3}\[([^\]]+)\]:\s*<?([^>\s]+)>?\s*$/);
+    if (dm) {
+      MD_REFS[dm[1].trim().toLowerCase()] = esc(dm[2]).replace(/"/g, '%22');
+      skip[d] = true;
+    }
+  }
 
   function closeList() { if (listTag) { out.push('</' + listTag + '>'); listTag = null; } }
   function openList(tag) { if (listTag !== tag) { closeList(); out.push('<' + tag + '>'); listTag = tag; } }
@@ -558,6 +640,31 @@ function mdToHtml(md) {
       continue;
     }
     if (inCode) { codeBuf.push(raw); continue; }
+    if (skip[i]) continue;
+
+    /* Таблица: шапка + разделитель. Пустые строки между рядами не мешают. */
+    if (isTableRow(raw)) {
+      var j = i + 1;
+      while (j < lines.length && lines[j].trim() === '') j++;
+      var aligns = j < lines.length ? tableAligns(lines[j]) : null;
+      if (aligns) {
+        closeList();
+        var body = [], k = j + 1;
+        while (k < lines.length) {
+          var look = k;
+          while (look < lines.length && lines[look].trim() === '') look++;
+          /* Соседний ряд достаточно узнать по палке, после пустой строки — строже. */
+          var ok = look < lines.length && !skip[look]
+                && (look === k ? lines[look].indexOf('|') >= 0 : isTableRow(lines[look]));
+          if (!ok) break;
+          body.push(splitRow(lines[look]));
+          k = look + 1;
+        }
+        out.push(renderTable(splitRow(raw), aligns, body));
+        i = k - 1;
+        continue;
+      }
+    }
 
     var line = esc(raw);
     if (/^(---+|\*\*\*+|___+)$/.test(line.trim())) { closeList(); out.push('<hr>'); continue; }
@@ -1028,7 +1135,13 @@ for _i in range(1, 8):
         "- **Второй акт** — сцена у озера\n"
         "- Третий акт — бал и развязка\n\n"
         "> Музыка Чайковского здесь работает как отдельный герой.\n\n"
-        "Если интересно, могу разобрать *музыкальные темы* по актам." % _i
+        "Спектакль | Что особенного | По времени |\n\n"
+        "| --- | --- | :---: |\n\n"
+        "| Лебединое озеро | Белый акт и 32 фуэте ([Большой][1]) | ⚠️ 2 ч 45 мин |\n\n"
+        "| Спящая красавица | Пышные декорации, много детей в зале | ❌ 3 ч 10 мин |\n\n"
+        "| Дон Кихот | Живой темп, испанские танцы | ✅ 2 ч 20 мин |\n\n"
+        "Если интересно, могу разобрать *музыкальные темы* по актам.\n\n"
+        "[1]: https://bolshoi.ru/\n" % _i
     )
 
 

@@ -66,6 +66,9 @@ $parsed = (
 
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
+    -- ключ пары: по нему склеиваются прогоны в pairwise_merge.sql
+    Yson::LookupString($node(p.input_meta), 'instruct_id') AS instruct_id,
+
     p.dialog                                AS dialog,
     -- последний запрос пользователя
     $last_of_role(p.dialog, 'user')         AS instruct,

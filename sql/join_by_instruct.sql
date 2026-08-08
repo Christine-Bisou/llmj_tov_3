@@ -11,7 +11,12 @@ PRAGMA yt.InferSchema = '1';
 DECLARE $input1 AS String;
 DECLARE $input2 AS String;
 DECLARE $output1 AS String;  -- пара ответов на один запрос
-DECLARE $output2 AS String;  -- сколько строк склеилось
+DECLARE $output2 AS String;  -- сколько склеилось и как повёл бы себя второй вариант ключа
+
+-- По чему склеивать: 'dialog' — весь диалог с ролями, 'user' — только реплики
+-- пользователя. instruct ключом быть не может: местами он пустой, и такие
+-- строки склеились бы друг с другом как попало.
+$key_mode = 'dialog';
 
 $empty_dialog = ListCreate(ParseType(@@Struct<'content':Utf8,'role':Utf8>@@));
 
@@ -23,34 +28,50 @@ $norm = ($s) -> {
     ) ?? CAST('' AS Utf8);
 };
 
--- Ключ — все реплики пользователя из диалога, а не instruct: instruct местами
--- пустой, и такие строки склеились бы друг с другом как попало. Реплики
--- ассистента в ключ не берём — они у разных моделей разные.
-$key = ($dialog) -> {
-    RETURN $norm(
-        String::JoinFromList(
-            ListMap(
-                ListExtract(
-                    ListFilter($dialog ?? $empty_dialog, ($m) -> { RETURN $m.role == 'user' }),
-                    'content'
-                ),
-                ($c) -> { RETURN CAST($c AS String) }
+$join_lines = ($lines) -> { RETURN $norm(String::JoinFromList($lines, "\n")) };
+
+-- Весь диалог: роль в ключ входит, иначе один и тот же текст от пользователя
+-- и от ассистента дал бы одинаковый ключ.
+$dialog_key = ($dialog) -> {
+    RETURN $join_lines(
+        ListMap($dialog ?? $empty_dialog, ($m) -> {
+            RETURN CAST($m.role AS String) || ": " || CAST($m.content AS String);
+        })
+    );
+};
+
+-- Только реплики пользователя: запасной вариант на случай, если контекст
+-- ассистента в двух выгрузках окажется не побайтово одинаковым.
+$user_key = ($dialog) -> {
+    RETURN $join_lines(
+        ListMap(
+            ListExtract(
+                ListFilter($dialog ?? $empty_dialog, ($m) -> { RETURN $m.role == 'user' }),
+                'content'
             ),
-            "\n"
+            ($c) -> { RETURN CAST($c AS String) }
         )
     );
 };
 
+$pick = ($d, $u) -> { RETURN IF($key_mode == 'user', $u, $d) };
+
 $left = (
-    SELECT a.*, $key(a.dialog) AS join_key
+    SELECT
+        a.*,
+        $dialog_key(a.dialog) AS key_dialog,
+        $user_key(a.dialog) AS key_user,
+        $pick($dialog_key(a.dialog), $user_key(a.dialog)) AS join_key
     FROM $input1 AS a
-    WHERE $key(a.dialog) != ''
 );
 
 $right = (
-    SELECT b.*, $key(b.dialog) AS join_key
+    SELECT
+        b.*,
+        $dialog_key(b.dialog) AS key_dialog,
+        $user_key(b.dialog) AS key_user,
+        $pick($dialog_key(b.dialog), $user_key(b.dialog)) AS join_key
     FROM $input2 AS b
-    WHERE $key(b.dialog) != ''
 );
 
 $joined = (
@@ -80,8 +101,8 @@ $joined = (
         a.thinking_enabled      AS thinking_enabled,
 
         a.join_key              AS join_key
-    FROM $left AS a
-    INNER JOIN $right AS b ON a.join_key == b.join_key
+    FROM (SELECT * FROM $left WHERE join_key != '') AS a
+    INNER JOIN (SELECT * FROM $right WHERE join_key != '') AS b ON a.join_key == b.join_key
 );
 
 INSERT INTO $output1 WITH TRUNCATE
@@ -91,12 +112,31 @@ FROM $joined AS j;
 $left_rows = (SELECT COUNT(*) FROM $left);
 $right_rows = (SELECT COUNT(*) FROM $right);
 
--- Джоин по тексту не обязан быть один-к-одному: если один и тот же запрос
+-- Сколько ключей нашли пару при каждом варианте: видно, теряет ли строгий
+-- ключ по полному диалогу что-то против ключа по репликам пользователя.
+$shared_dialog = (
+    SELECT COUNT(*)
+    FROM (SELECT DISTINCT key_dialog FROM $left WHERE key_dialog != '') AS l
+    INNER JOIN (SELECT DISTINCT key_dialog FROM $right WHERE key_dialog != '') AS r
+    USING (key_dialog)
+);
+
+$shared_user = (
+    SELECT COUNT(*)
+    FROM (SELECT DISTINCT key_user FROM $left WHERE key_user != '') AS l
+    INNER JOIN (SELECT DISTINCT key_user FROM $right WHERE key_user != '') AS r
+    USING (key_user)
+);
+
+-- Джоин по тексту не обязан быть один-к-одному: если один и тот же диалог
 -- встречается в таблице дважды, пар получится больше, чем строк.
 INSERT INTO $output2 WITH TRUNCATE
 SELECT
+    $key_mode                   AS key_mode,
     $left_rows                  AS left_rows,
     $right_rows                 AS right_rows,
     COUNT(*)                    AS joined_rows,
-    COUNT(DISTINCT join_key)    AS joined_keys
+    COUNT(DISTINCT join_key)    AS joined_keys,
+    $shared_dialog              AS shared_keys_dialog,
+    $shared_user                AS shared_keys_user
 FROM $joined;

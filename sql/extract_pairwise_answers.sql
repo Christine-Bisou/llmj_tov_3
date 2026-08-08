@@ -2,6 +2,7 @@ PRAGMA Yson.AutoConvert;
 PRAGMA yson.DisableStrict;
 PRAGMA SimpleColumns;
 PRAGMA AnsiOptionalAs;
+PRAGMA yt.UseNativeYtTypes;
 PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '1';
 

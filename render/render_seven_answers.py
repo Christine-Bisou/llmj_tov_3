@@ -18,6 +18,9 @@
     * два комментария — ToV слева, ПА справа — и один итоговый JSON
       с кнопками «скопировать»/«скачать».
 
+Рендерятся только строки, где заполнены все 7 ответов; неполные уходят
+во второй выход `main()` (и просто пропускаются в CLI).
+
 Локальная проверка:
     python render/render_seven_answers.py --demo out.html
     python render/render_seven_answers.py rows.jsonl out_dir/
@@ -965,15 +968,34 @@ def build_html(row):
     return html
 
 
+def has_all_answers(row):
+    """True, если заполнены все семь ответов."""
+    return len(collect_answers(row)) == len(SLOTS)
+
+
 def main(in1=None, in2=None, in3=None, mr_tables=None, **kwargs):
-    """Точка входа для операции: на каждую строку — отрендеренная html-страница."""
+    """Точка входа для операции: на каждую строку — отрендеренная html-страница.
+
+    Рендерятся только строки, где заполнены все 7 ответов. Неполные строки
+    уходят во второй выход, чтобы они не пропадали молча.
+    """
     results = []
+    skipped = []
     for row in (in1 or []):
+        row_id = row.get("instruct_id", row.get("id", ""))
+        answers = collect_answers(row)
+        if len(answers) < len(SLOTS):
+            skipped.append({
+                "instruct_id": row_id,
+                "filled": len(answers),
+                "empty_slots": [s for s in SLOTS if s not in {a["slot"] for a in answers}],
+            })
+            continue
         results.append({
-            "instruct_id": row.get("instruct_id", row.get("id", "")),
+            "instruct_id": row_id,
             "html": build_html(row),
         })
-    return results, []
+    return results, skipped
 
 
 # --------------------------------------------------------------------------- #
@@ -1026,19 +1048,23 @@ def _cli(argv):
     dst = argv[1] if len(argv) > 1 else "rendered"
     os.makedirs(dst, exist_ok=True)
     written = 0
+    skipped = 0
     with open(src, encoding="utf-8") as fh:
         for i, line in enumerate(fh):
             line = line.strip()
             if not line:
                 continue
             row = json.loads(line)
+            if not has_all_answers(row):
+                skipped += 1
+                continue
             name = str(row.get("instruct_id") or row.get("id") or i)
             name = re.sub(r"[^\w.-]+", "_", name)[:80]
             path = os.path.join(dst, "%s.html" % name)
             with open(path, "w", encoding="utf-8") as out:
                 out.write(build_html(row))
             written += 1
-    print("написано страниц: %d в %s" % (written, dst))
+    print("написано страниц: %d в %s (пропущено неполных: %d)" % (written, dst, skipped))
     return 0
 
 

@@ -61,14 +61,6 @@ $node = ($v) -> { RETURN $v };
 
 $str = ($n, $key) -> { RETURN Yson::LookupString($node($n), $key) };
 
-$to_dialog = ($json) -> {
-    RETURN Yson::ConvertTo(
-        Yson::ParseJson($json),
-        $dialog_type,
-        Yson::Options(false as Strict)
-    ) ?? $empty_dialog;
-};
-
 -- instruct — последний запрос пользователя, без хвостового «Ассистент:»
 $instruct = ($dialog) -> {
     RETURN ListLast(
@@ -87,7 +79,12 @@ $answers = ($out) -> {
 $parsed = (
     SELECT
         t.*,
-        $to_dialog($parse_dialog(CAST($str(t.input, 'query') AS Utf8))) AS dialog
+        -- разбираем query один раз и сразу приводим к типизированному диалогу
+        Yson::ConvertTo(
+            Yson::ParseJson($parse_dialog(CAST($str(t.input, 'query') AS Utf8))),
+            $dialog_type,
+            Yson::Options(false as Strict)
+        ) ?? $empty_dialog AS dialog
     FROM $input1 AS t
 );
 

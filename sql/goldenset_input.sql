@@ -31,7 +31,10 @@ $t =
     -- срезов одной сессии, поэтому id считаем по всей строке, как в парном скрипте
     String::HexEncode(Digest::Sha256(ToBytes(Yson::SerializePretty(Yson::From(TableRow()))))) AS instruct_id,
     t.right_answer AS answer,
+    -- сам ответ лежит в neuro_alice_md_raw_wout_reasoning, а имя модели —
+    -- в meta.answer_producer (например 'S/GEN_APRIL_WEAK_PLAN_1504')
     Yson::ConvertToString(t.right_answer['neuro_alice_md_raw_wout_reasoning']) AS answer_text,
+    Yson::LookupString(Yson::Lookup(t.right_answer, 'meta'), 'answer_producer') ?? 'gs' AS answer_producer,
     t.right_final_content_sources_json AS final_content_sources_json,
   FROM $input_ AS t;
 
@@ -55,7 +58,7 @@ SELECT
   dialog,
   meta,
   answer_text AS answer_1,
-  'gs' AS answer_source_1,
+  answer_producer AS answer_source_1,
   answer_text AS answer_2,
-  'gs' AS answer_source_2
+  answer_producer AS answer_source_2
 FROM $t;

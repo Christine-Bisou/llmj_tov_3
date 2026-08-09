@@ -105,6 +105,25 @@ def _coerce(raw):
     return None
 
 
+# Служебные сноски поиска: [web_0_0_6], [geo_1_0_0] и им подобные —
+# буквенный префикс, дальше только цифры и подчёркивания.
+_CITATION_RE = re.compile(r"\[(?:[a-zA-Z][a-zA-Z0-9]*_)+\d+(?:_\d+)*\]")
+
+
+def strip_citations(text):
+    """Убирает из текста сноски вида [web_0_0_6][geo_1_0_0] и мусор после них."""
+    if not text:
+        return text
+    s = _CITATION_RE.sub("", str(text))
+    if s == str(text):
+        return s
+    s = re.sub(r"\(\s*[,;·—-]?\s*\)", "", s)          # осиротевшие скобки
+    s = re.sub(r"[ \t]{2,}", " ", s)                   # двойные пробелы на месте сносок
+    s = re.sub(r"[ \t]+([,.;:!?…)\]])", r"\1", s)      # пробел перед точкой и запятой
+    s = re.sub(r"[ \t]+$", "", s, flags=re.M)
+    return s
+
+
 def parse_dialog(raw):
     """Достаёт список реплик [{'role': ..., 'content': ...}] из колонки диалога."""
     data = _coerce(raw)
@@ -125,11 +144,11 @@ def parse_dialog(raw):
                 content = item.get("text", "")
             if isinstance(content, (list, dict)):
                 content = json.dumps(content, ensure_ascii=False, indent=2)
-            turns.append({"role": role, "content": str(content)})
+            turns.append({"role": role, "content": strip_citations(str(content))})
         elif isinstance(item, (list, tuple)) and len(item) == 2:
-            turns.append({"role": str(item[0]), "content": str(item[1])})
+            turns.append({"role": str(item[0]), "content": strip_citations(str(item[1]))})
         elif isinstance(item, str):
-            turns.append({"role": "user", "content": item})
+            turns.append({"role": "user", "content": strip_citations(item)})
     return turns
 
 
@@ -145,7 +164,12 @@ def collect_answers(row):
             continue
         model = row.get(mkey)
         model = str(model).strip() if model is not None and str(model).strip() else "модель %d" % idx
-        answers.append({"slot": slot, "num": idx, "model": model, "content": text})
+        answers.append({
+            "slot": slot,
+            "num": idx,
+            "model": model,
+            "content": strip_citations(text),
+        })
     return answers
 
 
@@ -1116,7 +1140,7 @@ _DEMO_ROW = {
         {"role": "user", "content": "расскажи лебединое озеро спящая красавица дон-кихот"},
         {"role": "assistant", "content": "Кратко о сюжетах этих балетов:\n\n**Лебединое озеро**\nПринц Зигфрид встречает Одетту…"},
         {"role": "user", "content": "расскажи сюжет балетных спектаклей в большом театре"},
-        {"role": "assistant", "content": "Конечно.\n\n**Лебединое озеро** — история о принце Зигфриде и заколдованной Одетте."},
+        {"role": "assistant", "content": "Конечно.\n\n**Лебединое озеро** — история о принце Зигфриде и заколдованной Одетте [web_0_0_11]."},
         {"role": "user", "content": "расскажи подробнее"},
     ], ensure_ascii=False),
     "model_1": "baseline",
@@ -1130,14 +1154,14 @@ _DEMO_ROW = {
 for _i in range(1, 8):
     _DEMO_ROW["answer_%d" % _i] = (
         "## Вариант %d\n\n"
-        "Если коротко, то сюжет держится на трёх сценах.\n\n"
+        "Если коротко, то сюжет держится на трёх сценах [web_0_0_6][geo_1_0_0].\n\n"
         "- **Первый акт** — знакомство с героями\n"
         "- **Второй акт** — сцена у озера\n"
         "- Третий акт — бал и развязка\n\n"
         "> Музыка Чайковского здесь работает как отдельный герой.\n\n"
         "Спектакль | Что особенного | По времени |\n\n"
         "| --- | --- | :---: |\n\n"
-        "| Лебединое озеро | Белый акт и 32 фуэте ([Большой][1]) | ⚠️ 2 ч 45 мин |\n\n"
+        "| Лебединое озеро | Белый акт и 32 фуэте [web_0_0_10] ([Большой][1]) | ⚠️ 2 ч 45 мин |\n\n"
         "| Спящая красавица | Пышные декорации, много детей в зале | ❌ 3 ч 10 мин |\n\n"
         "| Дон Кихот | Живой темп, испанские танцы | ✅ 2 ч 20 мин |\n\n"
         "Если интересно, могу разобрать *музыкальные темы* по актам.\n\n"

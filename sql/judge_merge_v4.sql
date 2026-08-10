@@ -88,26 +88,28 @@ $star = ($dir, $rev, $md, $mr, $asp) -> {
     RETURN CAST(Math::Floor($avg($dir, $rev, $md, $mr, $asp)) AS Int64);
 };
 
+-- Везде AsStruct, а не короткая запись <| |>: она разбирается не во всех
+-- версиях YQL. Значение то же самое, только имя поля пишется справа.
 $aspect_block = ($dir, $rev, $md, $mr, $asp) -> {
-    RETURN <|
-        score:     $star($dir, $rev, $md, $mr, $asp),
-        avg:       $avg($dir, $rev, $md, $mr, $asp),
-        direct:    $score($dir, $md, $asp),
-        reversed:  $score($rev, $mr, $asp),
-        reasoning: $reason($dir, $md, $asp)
-    |>;
+    RETURN AsStruct(
+        $star($dir, $rev, $md, $mr, $asp)   AS score,
+        $avg($dir, $rev, $md, $mr, $asp)    AS avg,
+        $score($dir, $md, $asp)             AS direct,
+        $score($rev, $mr, $asp)             AS reversed,
+        $reason($dir, $md, $asp)            AS reasoning
+    );
 };
 
 -- $md — ключ этого ответа в прямом проходе, $mr — в обратном (там всё зеркально).
 -- Структурой, а не Yson: этот же блок кладут ВНУТРЬ другого блока (выход 3),
 -- и вложенный Yson там пришлось бы разворачивать вторым Yson::Parse.
 $pointwise_struct = ($dir, $rev, $md, $mr) -> {
-    RETURN <|
-        clarity:    $aspect_block($dir, $rev, $md, $mr, 'clarity'),
-        liveliness: $aspect_block($dir, $rev, $md, $mr, 'liveliness'),
-        connect:    $aspect_block($dir, $rev, $md, $mr, 'connect'),
-        overall:    $aspect_block($dir, $rev, $md, $mr, 'overall')
-    |>;
+    RETURN AsStruct(
+        $aspect_block($dir, $rev, $md, $mr, 'clarity')    AS clarity,
+        $aspect_block($dir, $rev, $md, $mr, 'liveliness') AS liveliness,
+        $aspect_block($dir, $rev, $md, $mr, 'connect')    AS connect,
+        $aspect_block($dir, $rev, $md, $mr, 'overall')    AS overall
+    );
 };
 
 $pointwise = ($dir, $rev, $md, $mr) -> {
@@ -124,12 +126,12 @@ $dst_node = ($y, $key) -> {
 
 -- Четыре числа без обвязки — формат разметки.
 $clc_struct = ($dir, $rev, $md, $mr) -> {
-    RETURN <|
-        clarity:    $star($dir, $rev, $md, $mr, 'clarity'),
-        liveliness: $star($dir, $rev, $md, $mr, 'liveliness'),
-        connect:    $star($dir, $rev, $md, $mr, 'connect'),
-        overall:    $star($dir, $rev, $md, $mr, 'overall')
-    |>;
+    RETURN AsStruct(
+        $star($dir, $rev, $md, $mr, 'clarity')    AS clarity,
+        $star($dir, $rev, $md, $mr, 'liveliness') AS liveliness,
+        $star($dir, $rev, $md, $mr, 'connect')    AS connect,
+        $star($dir, $rev, $md, $mr, 'overall')    AS overall
+    );
 };
 
 $clc = ($dir, $rev, $md, $mr) -> {
@@ -161,11 +163,11 @@ $audit = ($mk_node, $name) -> {
 -- ($review_key, $eval_key) разные у прямого и обратного прохода: в обратном
 -- ответы переставлены, и answer_1 лежит под model_2.
 $review = ($y, $review_key, $eval_key) -> {
-    RETURN <|
-        summary:   Yson::LookupString(Yson::Lookup($y, $review_key), 'summary') ?? '',
-        markers:   Yson::Serialize($mk($y, $review_key)),
-        pointwise: $dst_node($y, $eval_key)
-    |>;
+    RETURN AsStruct(
+        (Yson::LookupString(Yson::Lookup($y, $review_key), 'summary') ?? '') AS summary,
+        Yson::Serialize($mk($y, $review_key))                                AS markers,
+        $dst_node($y, $eval_key)                                             AS pointwise
+    );
 };
 
 -- ===================== ДОПОЛНИТЕЛЬНЫЙ ДЖАДЖ ПО РЕЧЕВЫМ =====================
@@ -239,20 +241,20 @@ $markers = ($d_mk, $r_mk, $ext_on, $ext_why) -> {
         $in_extra   = ($n == $extra_marker) AND $ext_on;
         -- маркер стоит ТОЛЬКО потому, что его нашёл доп. джадж
         $from_extra = $in_extra AND NOT ($in_d OR $in_r);
-        RETURN AsTuple($n, <|
-            is_present:  $in_d OR $in_r OR $in_extra,
-            in_direct:   $in_d,
-            in_reversed: $in_r,
-            in_extra:    $in_extra,
-            found_by_extra_judge: $from_extra,
+        RETURN AsTuple($n, AsStruct(
+            ($in_d OR $in_r OR $in_extra) AS is_present,
+            $in_d       AS in_direct,
+            $in_r       AS in_reversed,
+            $in_extra   AS in_extra,
+            $from_extra AS found_by_extra_judge,
             -- согласие считаем по двум основным проходам: доп. джадж — не проход,
             -- он смотрит один маркер и голосует только в плюс
-            agreed:      $in_d == $in_r,
-            audit:       IF($audit($d_mk, $n) != '', $audit($d_mk, $n), $audit($r_mk, $n)),
-            explanation: IF($from_extra,
-                            IF($ext_why != '', $extra_note || ' ' || $ext_why, $extra_note),
-                            IF($in_d, $why($d_mk, $n), $why($r_mk, $n)))
-        |>);
+            ($in_d == $in_r) AS agreed,
+            IF($audit($d_mk, $n) != '', $audit($d_mk, $n), $audit($r_mk, $n)) AS audit,
+            IF($from_extra,
+               IF($ext_why != '', $extra_note || ' ' || $ext_why, $extra_note),
+               IF($in_d, $why($d_mk, $n), $why($r_mk, $n))) AS explanation
+        ));
     }))));
 };
 
@@ -293,37 +295,37 @@ $cb = ($d_mk, $r_mk, $n) -> {
 };
 
 $markers_to_checkboxes = ($d_mk, $r_mk, $ext_on) -> {
-    RETURN Just(Yson::From(<|
-        point_bad_intro:              $cb($d_mk, $r_mk, 'bad_intro'),
-        point_bad_proactivity:        $cb($d_mk, $r_mk, 'bad_proactivity'),
-        tov_minus_addressing:         $cb($d_mk, $r_mk, 'inconsistency'),
-        tov_minus_boundary_violation: $cb($d_mk, $r_mk, 'boundaries_violation'),
-        tov_minus_cliches:            $cb($d_mk, $r_mk, 'template_phrases'),
-        tov_minus_dry:                $cb($d_mk, $r_mk, 'stuffy_bureaucratic'),
+    RETURN Just(Yson::From(AsStruct(
+        $cb($d_mk, $r_mk, 'bad_intro')            AS point_bad_intro,
+        $cb($d_mk, $r_mk, 'bad_proactivity')      AS point_bad_proactivity,
+        $cb($d_mk, $r_mk, 'inconsistency')        AS tov_minus_addressing,
+        $cb($d_mk, $r_mk, 'boundaries_violation') AS tov_minus_boundary_violation,
+        $cb($d_mk, $r_mk, 'template_phrases')     AS tov_minus_cliches,
+        $cb($d_mk, $r_mk, 'stuffy_bureaucratic')  AS tov_minus_dry,
         -- единственный чекбокс, который может доставить доп. джадж
-        tov_minus_language_errors:    $on_with_extra($d_mk, $r_mk, 'language_errors', $ext_on),
-        tov_minus_overemotional:      $cb($d_mk, $r_mk, 'over_emotional'),
-        tov_plus_empathy:             $cb($d_mk, $r_mk, 'empathy'),
-        tov_plus_humor:               $cb($d_mk, $r_mk, 'humor_metaphors'),
-        tov_plus_subject:             $cb($d_mk, $r_mk, 'subjectivity'),
-        tov_plus_tone_match:          $cb($d_mk, $r_mk, 'tone_match'),
-        tov_tone_unacceptable:        $cb($d_mk, $r_mk, 'critical_tone')
-    |>));
+        $on_with_extra($d_mk, $r_mk, 'language_errors', $ext_on) AS tov_minus_language_errors,
+        $cb($d_mk, $r_mk, 'over_emotional')       AS tov_minus_overemotional,
+        $cb($d_mk, $r_mk, 'empathy')              AS tov_plus_empathy,
+        $cb($d_mk, $r_mk, 'humor_metaphors')      AS tov_plus_humor,
+        $cb($d_mk, $r_mk, 'subjectivity')         AS tov_plus_subject,
+        $cb($d_mk, $r_mk, 'tone_match')           AS tov_plus_tone_match,
+        $cb($d_mk, $r_mk, 'critical_tone')        AS tov_tone_unacceptable
+    )));
 };
 
 -- Блок про речевые целиком: флаг, откуда он взялся и обоснование доп. джаджа.
 $speech_block = ($d_mk, $r_mk, $ext_on, $ext_why) -> {
-    RETURN <|
-        is_present:           $on_with_extra($d_mk, $r_mk, 'language_errors', $ext_on),
-        in_passes:            $cb($d_mk, $r_mk, 'language_errors'),
-        in_extra_judge:       $ext_on,
-        found_by_extra_judge: $ext_on AND NOT $cb($d_mk, $r_mk, 'language_errors'),
-        reasoning:            IF($ext_on AND NOT $cb($d_mk, $r_mk, 'language_errors'),
-                                 IF($ext_why != '', $extra_note || ' ' || $ext_why, $extra_note),
-                                 IF($is_on($d_mk, 'language_errors'),
-                                    $why($d_mk, 'language_errors'),
-                                    $why($r_mk, 'language_errors')))
-    |>;
+    RETURN AsStruct(
+        $on_with_extra($d_mk, $r_mk, 'language_errors', $ext_on) AS is_present,
+        $cb($d_mk, $r_mk, 'language_errors')                     AS in_passes,
+        $ext_on                                                  AS in_extra_judge,
+        ($ext_on AND NOT $cb($d_mk, $r_mk, 'language_errors'))   AS found_by_extra_judge,
+        IF($ext_on AND NOT $cb($d_mk, $r_mk, 'language_errors'),
+           IF($ext_why != '', $extra_note || ' ' || $ext_why, $extra_note),
+           IF($is_on($d_mk, 'language_errors'),
+              $why($d_mk, 'language_errors'),
+              $why($r_mk, 'language_errors')))                   AS reasoning
+    );
 };
 
 -- ========================= ВЕРДИКТ =========================
@@ -479,32 +481,32 @@ SELECT
     Just(Yson::From($speech_block(f.mk2_dir, f.mk2_rev, f.speech_extra_B, f.speech_extra_B_why))) AS speech_check_2,
 
     -- ---------- вердикт ----------
-    Just(Yson::From(<|
-        winner:            $as_source(f.tov_winner, f.answer_source_1, f.answer_source_2),
-        winner_model:      f.tov_winner,
-        direct:            $as_source(f.w_direct, f.answer_source_1, f.answer_source_2),
-        reversed:          $as_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2),
-        agreement:         $agreement(f.w_direct, f.w_reversed_norm),
-        strength:          $strength(f.w_direct, f.w_reversed_norm),
-        reasoning_direct:  $sbs_why(f.dir_yson),
-        reasoning_reversed: $sbs_why(f.rev_yson)
-    |>))                                     AS sbs,
+    Just(Yson::From(AsStruct(
+        $as_source(f.tov_winner, f.answer_source_1, f.answer_source_2)      AS winner,
+        f.tov_winner                                                        AS winner_model,
+        $as_source(f.w_direct, f.answer_source_1, f.answer_source_2)        AS direct,
+        $as_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2) AS reversed,
+        $agreement(f.w_direct, f.w_reversed_norm)                           AS agreement,
+        $strength(f.w_direct, f.w_reversed_norm)                            AS strength,
+        $sbs_why(f.dir_yson)                                                AS reasoning_direct,
+        $sbs_why(f.rev_yson)                                                AS reasoning_reversed
+    )))                                      AS sbs,
 
     -- плоско, чтобы фильтровать и группировать без Yson::Lookup
     $as_source(f.tov_winner, f.answer_source_1, f.answer_source_2) AS tov_winner_source,
 
-    Just(Yson::From(<|
-        model_winner_direct:              f.w_direct,
-        model_winner_reversed_normalized: f.w_reversed_norm,
-        reasoning_direct:                 $sbs_why(f.dir_yson),
-        reasoning_reversed:               $sbs_why(f.rev_yson),
-        direct_m1_overall:                $score(f.dir_yson, 'model_1_evaluation', 'overall'),
-        direct_m2_overall:                $score(f.dir_yson, 'model_2_evaluation', 'overall'),
-        reversed_m1_overall:              $score(f.rev_yson, 'model_2_evaluation', 'overall'),
-        reversed_m2_overall:              $score(f.rev_yson, 'model_1_evaluation', 'overall'),
-        process_url:                      'https://nirvana.yandex-team.ru/process/9113ab38-0999-4125-b182-523e63252411',
-        graph_owner:                      'kristisha'
-    |>))                                     AS meta_info,
+    Just(Yson::From(AsStruct(
+        f.w_direct                                            AS model_winner_direct,
+        f.w_reversed_norm                                     AS model_winner_reversed_normalized,
+        $sbs_why(f.dir_yson)                                  AS reasoning_direct,
+        $sbs_why(f.rev_yson)                                  AS reasoning_reversed,
+        $score(f.dir_yson, 'model_1_evaluation', 'overall')    AS direct_m1_overall,
+        $score(f.dir_yson, 'model_2_evaluation', 'overall')    AS direct_m2_overall,
+        $score(f.rev_yson, 'model_2_evaluation', 'overall')    AS reversed_m1_overall,
+        $score(f.rev_yson, 'model_1_evaluation', 'overall')    AS reversed_m2_overall,
+        'https://nirvana.yandex-team.ru/process/9113ab38-0999-4125-b182-523e63252411' AS process_url,
+        'kristisha'                                           AS graph_owner
+    )))                                      AS meta_info,
 
     -- WITHOUT обязан быть последним элементом списка.
     -- Первый блок — служебное этого запроса, второй — колонки, которые мы
@@ -534,130 +536,130 @@ SELECT
     f.for_join     AS for_join,
     f.instruct_id  AS instruct_id,
 
-    Just(Yson::From(<|
-        task_id:    COALESCE(CAST(f.for_join AS String), ''),
-        pool_id:    $yson_null,
-        project_id: $yson_null,
-        answer_A:   COALESCE(CAST(f.answer_1 AS String), ''),
-        answer_B:   COALESCE(CAST(f.answer_2 AS String), ''),
-        source_A:   COALESCE(CAST(f.answer_source_1 AS String), ''),
-        source_B:   COALESCE(CAST(f.answer_source_2 AS String), ''),
-        checkboxes: Just(Yson::From(<||>)),
-        markers:    Just(Yson::From(AsList())),
+    Just(Yson::From(AsStruct(
+        COALESCE(CAST(f.for_join AS String), '')        AS task_id,
+        $yson_null                                      AS pool_id,
+        $yson_null                                      AS project_id,
+        COALESCE(CAST(f.answer_1 AS String), '')        AS answer_A,
+        COALESCE(CAST(f.answer_2 AS String), '')        AS answer_B,
+        COALESCE(CAST(f.answer_source_1 AS String), '') AS source_A,
+        COALESCE(CAST(f.answer_source_2 AS String), '') AS source_B,
+        Just(Yson::From(AsStruct()))                    AS checkboxes,
+        Just(Yson::From(AsList()))                      AS markers,
 
-        raw_outputs: AsList(
+        AsList(
             -- в блоке прохода лежит то, что сказал именно он: доп. джадж сюда
             -- не подмешиваем (третий аргумент false), иначе в raw пропадёт
             -- разница между проходом и добором
-            <|
-                worker_id:       'direct',
-                assignment_id:   $yson_null,
-                annotations:     Just(Yson::From(AsList())),
-                checkboxes_A:    $markers_to_checkboxes(f.mk1_dir, f.mk1_dir, false),
-                checkboxes_B:    $markers_to_checkboxes(f.mk2_dir, f.mk2_dir, false),
-                pointwise_A:     $clc(f.dir_yson, f.dir_yson, 'model_1_evaluation', 'model_1_evaluation'),
-                pointwise_B:     $clc(f.dir_yson, f.dir_yson, 'model_2_evaluation', 'model_2_evaluation'),
-                comment_A:       COALESCE(CAST(f.model_1_analysis AS String), ''),
-                comment_B:       COALESCE(CAST(f.model_2_analysis AS String), ''),
-                general_comment: $sbs_why(f.dir_yson),
-                comment_judge:   $yson_null,
-                diff_pa:         $yson_null,
-                diff_pa_winner:  $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2),
-                direct_speech_A: $yson_null,
-                direct_speech_B: $yson_null,
-                markup_dt:       $yson_null,
-                skip:            $yson_null,
-                winner:          $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2)
-            |>,
+            AsStruct(
+                'direct'                                                     AS worker_id,
+                $yson_null                                                   AS assignment_id,
+                Just(Yson::From(AsList()))                                   AS annotations,
+                $markers_to_checkboxes(f.mk1_dir, f.mk1_dir, false)          AS checkboxes_A,
+                $markers_to_checkboxes(f.mk2_dir, f.mk2_dir, false)          AS checkboxes_B,
+                $clc(f.dir_yson, f.dir_yson, 'model_1_evaluation', 'model_1_evaluation') AS pointwise_A,
+                $clc(f.dir_yson, f.dir_yson, 'model_2_evaluation', 'model_2_evaluation') AS pointwise_B,
+                COALESCE(CAST(f.model_1_analysis AS String), '')             AS comment_A,
+                COALESCE(CAST(f.model_2_analysis AS String), '')             AS comment_B,
+                $sbs_why(f.dir_yson)                                         AS general_comment,
+                $yson_null                                                   AS comment_judge,
+                $yson_null                                                   AS diff_pa,
+                $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2) AS diff_pa_winner,
+                $yson_null                                                   AS direct_speech_A,
+                $yson_null                                                   AS direct_speech_B,
+                $yson_null                                                   AS markup_dt,
+                $yson_null                                                   AS skip,
+                $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2) AS winner
+            ),
             -- обратный проход уже нормализован: mk1_rev — это разметка answer_1,
             -- то есть model_2_markers_review сырого ответа. Ставить сюда
             -- model_1 нельзя, A и B поменяются местами
-            <|
-                worker_id:       'reverse',
-                assignment_id:   $yson_null,
-                annotations:     Just(Yson::From(AsList())),
-                checkboxes_A:    $markers_to_checkboxes(f.mk1_rev, f.mk1_rev, false),
-                checkboxes_B:    $markers_to_checkboxes(f.mk2_rev, f.mk2_rev, false),
-                pointwise_A:     $clc(f.rev_yson, f.rev_yson, 'model_2_evaluation', 'model_2_evaluation'),
-                pointwise_B:     $clc(f.rev_yson, f.rev_yson, 'model_1_evaluation', 'model_1_evaluation'),
-                comment_A:       COALESCE(CAST(f.model_1_linguistic_scan AS String), ''),
-                comment_B:       COALESCE(CAST(f.model_2_linguistic_scan AS String), ''),
-                general_comment: $sbs_why(f.rev_yson),
-                comment_judge:   $yson_null,
-                diff_pa:         $yson_null,
-                diff_pa_winner:  $winner_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2),
-                direct_speech_A: $yson_null,
-                direct_speech_B: $yson_null,
-                markup_dt:       $yson_null,
-                skip:            $yson_null,
-                winner:          $winner_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2)
-            |>
+            AsStruct(
+                'reverse'                                                    AS worker_id,
+                $yson_null                                                   AS assignment_id,
+                Just(Yson::From(AsList()))                                   AS annotations,
+                $markers_to_checkboxes(f.mk1_rev, f.mk1_rev, false)          AS checkboxes_A,
+                $markers_to_checkboxes(f.mk2_rev, f.mk2_rev, false)          AS checkboxes_B,
+                $clc(f.rev_yson, f.rev_yson, 'model_2_evaluation', 'model_2_evaluation') AS pointwise_A,
+                $clc(f.rev_yson, f.rev_yson, 'model_1_evaluation', 'model_1_evaluation') AS pointwise_B,
+                COALESCE(CAST(f.model_1_linguistic_scan AS String), '')      AS comment_A,
+                COALESCE(CAST(f.model_2_linguistic_scan AS String), '')      AS comment_B,
+                $sbs_why(f.rev_yson)                                         AS general_comment,
+                $yson_null                                                   AS comment_judge,
+                $yson_null                                                   AS diff_pa,
+                $winner_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2) AS diff_pa_winner,
+                $yson_null                                                   AS direct_speech_A,
+                $yson_null                                                   AS direct_speech_B,
+                $yson_null                                                   AS markup_dt,
+                $yson_null                                                   AS skip,
+                $winner_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2) AS winner
+            )
             -- третьим блоком доп. джадж сюда не встаёт: raw_outputs — список
             -- структур одного типа, а у джаджа по речевым нет ни чекбоксов, ни
             -- звёзд, ни вердикта. Пустой блок читался бы как «джадж сказал нет
             -- по всем маркерам». Его ответ лежит в speech_check_A/B ниже
-        )
-    |>)) AS raw_tov_markup,
+        )                                               AS raw_outputs
+    ))) AS raw_tov_markup,
 
-    Just(Yson::From(<|
-        task_id:    COALESCE(CAST(f.for_join AS String), ''),
-        pool_id:    $yson_null,
-        project_id: $yson_null,
+    Just(Yson::From(AsStruct(
+        COALESCE(CAST(f.for_join AS String), '')        AS task_id,
+        $yson_null                                      AS pool_id,
+        $yson_null                                      AS project_id,
         -- воркеров по-прежнему два: доп. джадж по речевым не размечает пару
         -- целиком, его ответ лежит отдельно в speech_check_A/B
-        worker_ids: AsList('direct', 'reverse'),
+        AsList('direct', 'reverse')                     AS worker_ids,
 
-        answer_A:   COALESCE(CAST(f.answer_1 AS String), ''),
-        answer_B:   COALESCE(CAST(f.answer_2 AS String), ''),
-        source_A:   COALESCE(CAST(f.answer_source_1 AS String), ''),
-        source_B:   COALESCE(CAST(f.answer_source_2 AS String), ''),
+        COALESCE(CAST(f.answer_1 AS String), '')        AS answer_A,
+        COALESCE(CAST(f.answer_2 AS String), '')        AS answer_B,
+        COALESCE(CAST(f.answer_source_1 AS String), '') AS source_A,
+        COALESCE(CAST(f.answer_source_2 AS String), '') AS source_B,
 
         -- сводные чекбоксы: маркер стоит, если его увидел хотя бы один проход,
         -- а речевые — ещё и если их нашёл доп. джадж
-        checkboxes_A: $markers_to_checkboxes(f.mk1_dir, f.mk1_rev, f.speech_extra_A),
-        checkboxes_B: $markers_to_checkboxes(f.mk2_dir, f.mk2_rev, f.speech_extra_B),
+        $markers_to_checkboxes(f.mk1_dir, f.mk1_rev, f.speech_extra_A) AS checkboxes_A,
+        $markers_to_checkboxes(f.mk2_dir, f.mk2_rev, f.speech_extra_B) AS checkboxes_B,
 
-        pointwise_A: $clc(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation'),
-        pointwise_B: $clc(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation'),
+        $clc(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation') AS pointwise_A,
+        $clc(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation') AS pointwise_B,
 
-        markers_A: $marker_list(f.mk1_dir, f.mk1_rev, f.speech_extra_A),
-        markers_B: $marker_list(f.mk2_dir, f.mk2_rev, f.speech_extra_B),
+        $marker_list(f.mk1_dir, f.mk1_rev, f.speech_extra_A) AS markers_A,
+        $marker_list(f.mk2_dir, f.mk2_rev, f.speech_extra_B) AS markers_B,
 
         -- откуда взялись речевые: если их поставил только доп. джадж,
         -- reasoning так и говорит
-        speech_check_A: $speech_block(f.mk1_dir, f.mk1_rev, f.speech_extra_A, f.speech_extra_A_why),
-        speech_check_B: $speech_block(f.mk2_dir, f.mk2_rev, f.speech_extra_B, f.speech_extra_B_why),
+        $speech_block(f.mk1_dir, f.mk1_rev, f.speech_extra_A, f.speech_extra_A_why) AS speech_check_A,
+        $speech_block(f.mk2_dir, f.mk2_rev, f.speech_extra_B, f.speech_extra_B_why) AS speech_check_B,
 
-        annotations:      AsList(AsList(), AsList()),
+        AsList(AsList(), AsList())                      AS annotations,
         -- список позиционный, по элементу на воркера из worker_ids. Черновик
         -- у обоих проходов общий, поэтому вместо копии во второй позиции —
         -- лингвистический скан: разные куски разбора вместо одного дважды
-        comments_A: AsList(
+        AsList(
             COALESCE(CAST(f.model_1_analysis AS String), ''),
             COALESCE(CAST(f.model_1_linguistic_scan AS String), '')
-        ),
-        comments_B: AsList(
+        )                                               AS comments_A,
+        AsList(
             COALESCE(CAST(f.model_2_analysis AS String), ''),
             COALESCE(CAST(f.model_2_linguistic_scan AS String), '')
-        ),
-        general_comments: AsList($sbs_why(f.dir_yson), $sbs_why(f.rev_yson)),
+        )                                               AS comments_B,
+        AsList($sbs_why(f.dir_yson), $sbs_why(f.rev_yson)) AS general_comments,
 
-        task_summarization: $yson_null,
+        $yson_null                                      AS task_summarization,
 
-        diff_pa:                  false,
-        diff_pa_winner:           $winner_source(f.tov_winner, f.answer_source_1, f.answer_source_2),
-        diff_pa_winner_agreement: $agreement(f.w_direct, f.w_reversed_norm),
-        diff_pa_winner_strength:  $strength(f.w_direct, f.w_reversed_norm),
+        false                                           AS diff_pa,
+        $winner_source(f.tov_winner, f.answer_source_1, f.answer_source_2) AS diff_pa_winner,
+        $agreement(f.w_direct, f.w_reversed_norm)       AS diff_pa_winner_agreement,
+        $strength(f.w_direct, f.w_reversed_norm)        AS diff_pa_winner_strength,
 
-        direct_speech_A: false,
-        direct_speech_B: false,
+        false                                           AS direct_speech_A,
+        false                                           AS direct_speech_B,
 
-        winner:           $winner_source(f.tov_winner, f.answer_source_1, f.answer_source_2),
-        winner_agreement: $agreement(f.w_direct, f.w_reversed_norm),
-        winner_strength:  $strength(f.w_direct, f.w_reversed_norm),
+        $winner_source(f.tov_winner, f.answer_source_1, f.answer_source_2) AS winner,
+        $agreement(f.w_direct, f.w_reversed_norm)       AS winner_agreement,
+        $strength(f.w_direct, f.w_reversed_norm)        AS winner_strength,
 
-        skip: false
-    |>)) AS agg_tov_markup
+        false                                           AS skip
+    ))) AS agg_tov_markup
 
 FROM $final AS f;
 
@@ -689,73 +691,73 @@ SELECT
     i3.input_render_data    AS input_render_data,
 
     -- ---------- сырьё ----------
-    Just(Yson::From(<|
-        common: <|
+    Just(Yson::From(AsStruct(
+        AsStruct(
             -- маркеры первого этапа, колонкой как есть
-            markers_A: f.markers_1_answer,
-            markers_B: f.markers_2_answer,
+            f.markers_1_answer AS markers_A,
+            f.markers_2_answer AS markers_B,
 
             -- разбор первого этапа: у проходов он общий
-            analysis_A:        COALESCE(CAST(f.model_1_analysis AS String), ''),
-            analysis_B:        COALESCE(CAST(f.model_2_analysis AS String), ''),
-            linguistic_scan_A: COALESCE(CAST(f.model_1_linguistic_scan AS String), ''),
-            linguistic_scan_B: COALESCE(CAST(f.model_2_linguistic_scan AS String), ''),
+            COALESCE(CAST(f.model_1_analysis AS String), '')        AS analysis_A,
+            COALESCE(CAST(f.model_2_analysis AS String), '')        AS analysis_B,
+            COALESCE(CAST(f.model_1_linguistic_scan AS String), '') AS linguistic_scan_A,
+            COALESCE(CAST(f.model_2_linguistic_scan AS String), '') AS linguistic_scan_B,
 
             -- звёзды колонкой как есть, ничего не пересчитываем
-            pointwise_A: f.pointwise_1,
-            pointwise_B: f.pointwise_2
-        |>,
-        direct: <|
-            winner:           $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2),
-            winner_reasoning: $sbs_why(f.dir_yson),
-            review_A:         $review(f.dir_yson, 'model_1_markers_review', 'model_1_evaluation'),
-            review_B:         $review(f.dir_yson, 'model_2_markers_review', 'model_2_evaluation')
-        |>,
+            f.pointwise_1 AS pointwise_A,
+            f.pointwise_2 AS pointwise_B
+        ) AS common,
+        AsStruct(
+            $winner_source(f.w_direct, f.answer_source_1, f.answer_source_2) AS winner,
+            $sbs_why(f.dir_yson)                                             AS winner_reasoning,
+            $review(f.dir_yson, 'model_1_markers_review', 'model_1_evaluation') AS review_A,
+            $review(f.dir_yson, 'model_2_markers_review', 'model_2_evaluation') AS review_B
+        ) AS direct,
         -- в обратном проходе ответы переставлены: answer_1 лежит под model_2.
         -- Раскладываем по A и B, а не по model_N, иначе блоки нельзя ставить
         -- рядом. Победитель по той же причине уже развёрнут
-        reverse: <|
-            winner:           $winner_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2),
-            winner_reasoning: $sbs_why(f.rev_yson),
-            review_A:         $review(f.rev_yson, 'model_2_markers_review', 'model_2_evaluation'),
-            review_B:         $review(f.rev_yson, 'model_1_markers_review', 'model_1_evaluation')
-        |>,
+        AsStruct(
+            $winner_source(f.w_reversed_norm, f.answer_source_1, f.answer_source_2) AS winner,
+            $sbs_why(f.rev_yson)                                             AS winner_reasoning,
+            $review(f.rev_yson, 'model_2_markers_review', 'model_2_evaluation') AS review_A,
+            $review(f.rev_yson, 'model_1_markers_review', 'model_1_evaluation') AS review_B
+        ) AS reverse,
         -- доп. джадж по речевым: только то, что сказал он сам. Объединение
         -- с проходами лежит ниже, в out_tov
-        speech_judge: <|
-            language_errors_A:           f.speech_extra_A,
-            language_errors_B:           f.speech_extra_B,
-            language_errors_A_reasoning: f.speech_extra_A_why,
-            language_errors_B_reasoning: f.speech_extra_B_why,
-            scan_A:                      f.speech_extra_A_scan,
-            scan_B:                      f.speech_extra_B_scan
-        |>
-    |>)) AS raw_tov,
+        AsStruct(
+            f.speech_extra_A      AS language_errors_A,
+            f.speech_extra_B      AS language_errors_B,
+            f.speech_extra_A_why  AS language_errors_A_reasoning,
+            f.speech_extra_B_why  AS language_errors_B_reasoning,
+            f.speech_extra_A_scan AS scan_A,
+            f.speech_extra_B_scan AS scan_B
+        ) AS speech_judge
+    ))) AS raw_tov,
 
     -- ---------- итог ----------
-    Just(Yson::From(<|
-        source_A: COALESCE(CAST(f.answer_source_1 AS String), ''),
-        source_B: COALESCE(CAST(f.answer_source_2 AS String), ''),
+    Just(Yson::From(AsStruct(
+        COALESCE(CAST(f.answer_source_1 AS String), '') AS source_A,
+        COALESCE(CAST(f.answer_source_2 AS String), '') AS source_B,
 
         -- четыре конечных числа на ответ, без обвязки
-        pointwise_A: $clc_struct(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation'),
-        pointwise_B: $clc_struct(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation'),
+        $clc_struct(f.dir_yson, f.rev_yson, 'model_1_evaluation', 'model_2_evaluation') AS pointwise_A,
+        $clc_struct(f.dir_yson, f.rev_yson, 'model_2_evaluation', 'model_1_evaluation') AS pointwise_B,
 
         -- словарь флагов: имя маркера -> bool, ничего кроме.
         -- language_errors здесь уже с добором доп. джаджа
-        markers_A: $flags_dict(f.mk1_dir, f.mk1_rev, f.speech_extra_A),
-        markers_B: $flags_dict(f.mk2_dir, f.mk2_rev, f.speech_extra_B),
+        $flags_dict(f.mk1_dir, f.mk1_rev, f.speech_extra_A) AS markers_A,
+        $flags_dict(f.mk2_dir, f.mk2_rev, f.speech_extra_B) AS markers_B,
 
         -- почему у речевых стоит true: проходы, доп. джадж или оба
-        speech_check_A: $speech_block(f.mk1_dir, f.mk1_rev, f.speech_extra_A, f.speech_extra_A_why),
-        speech_check_B: $speech_block(f.mk2_dir, f.mk2_rev, f.speech_extra_B, f.speech_extra_B_why),
+        $speech_block(f.mk1_dir, f.mk1_rev, f.speech_extra_A, f.speech_extra_A_why) AS speech_check_A,
+        $speech_block(f.mk2_dir, f.mk2_rev, f.speech_extra_B, f.speech_extra_B_why) AS speech_check_B,
 
-        winner: $winner_source(f.tov_winner, f.answer_source_1, f.answer_source_2),
+        $winner_source(f.tov_winner, f.answer_source_1, f.answer_source_2) AS winner,
 
         -- согласованность проходов: по ней и отбирают строки на ручной просмотр
-        winner_agreement: $agreement(f.w_direct, f.w_reversed_norm),
-        winner_strength:  $strength(f.w_direct, f.w_reversed_norm)
-    |>)) AS out_tov
+        $agreement(f.w_direct, f.w_reversed_norm) AS winner_agreement,
+        $strength(f.w_direct, f.w_reversed_norm)  AS winner_strength
+    ))) AS out_tov
 
 FROM $final AS f
 LEFT JOIN $input3 AS i3

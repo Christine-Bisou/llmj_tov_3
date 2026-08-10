@@ -1,24 +1,42 @@
--- Вход для разметки из одной таблицы-голденсета.
--- В отличие от парного варианта (двух источников ответов) здесь ответ ровно один
--- (right_answer), поэтому он дублируется в answer_1 и answer_2: формат разметки
--- всегда ждёт пару. Ключ склейки — instruct_id.
+-- Вход для разметки из одной таблицы: ответ ровно один, поэтому он дублируется
+-- в answer_1 и answer_2 — формат разметки всегда ждёт пару. Ключ склейки — instruct_id.
+--
+-- В колонке answer_1 лежит структура вида:
+--   {
+--     "html_url": "...",
+--     "version": "",
+--     "neuro_alice_md_raw": "...",
+--     "neuro_alice_md_raw_wout_reasoning": "...",   <- сам текст ответа
+--     "meta": {"rn_meta": "...", "answer_producer": "S/GEN_APRIL_WEAK_PLAN_1504"}
+--   }                                                        ^- отсюда берём source
 
 PRAGMA Yson.AutoConvert;
 PRAGMA yson.DisableStrict;
 PRAGMA yt.UseNativeYtTypes;
 
-DECLARE $input AS String;
+DECLARE $input1 AS String;
 DECLARE $output1 AS String;  -- оригинал входа
 DECLARE $output2 AS String;  -- сконвертированный вход для разметки
 
-$input_ =
+$input1_ =
   SELECT
     target_markup,
     generator_dialog_json,
-    right_answer,
-    right_final_content_sources_json,
+    answer_1,
+    final_content_sources_json_1,
     session_id
-  FROM $input;
+  FROM $input1;
+
+-- текст ответа из структуры
+$answer_text = ($a) -> {
+    RETURN Yson::ConvertToString($a['neuro_alice_md_raw_wout_reasoning'])
+        ?? Yson::ConvertToString($a['neuro_alice_md_raw']);
+};
+
+-- продюсер из meta — он же становится source
+$answer_source = ($a) -> {
+    RETURN Yson::LookupString(Yson::Lookup($a, 'meta'), 'answer_producer') ?? 'gs';
+};
 
 $t =
   SELECT
@@ -27,16 +45,12 @@ $t =
     t.generator_dialog_json.meta AS meta,
     t.generator_dialog_json AS generator_dialog_json,
     t.session_id AS session_id,
-    -- хэш строки: session_id один на диалог, но в поде может быть несколько
-    -- срезов одной сессии, поэтому id считаем по всей строке, как в парном скрипте
     String::HexEncode(Digest::Sha256(ToBytes(Yson::SerializePretty(Yson::From(TableRow()))))) AS instruct_id,
-    t.right_answer AS answer,
-    -- сам ответ лежит в neuro_alice_md_raw_wout_reasoning, а имя модели —
-    -- в meta.answer_producer (например 'S/GEN_APRIL_WEAK_PLAN_1504')
-    Yson::ConvertToString(t.right_answer['neuro_alice_md_raw_wout_reasoning']) AS answer_text,
-    Yson::LookupString(Yson::Lookup(t.right_answer, 'meta'), 'answer_producer') ?? 'gs' AS answer_producer,
-    t.right_final_content_sources_json AS final_content_sources_json,
-  FROM $input_ AS t;
+    t.answer_1 AS answer,
+    $answer_text(t.answer_1) AS answer_text,
+    $answer_source(t.answer_1) AS answer_source,
+    t.final_content_sources_json_1 AS final_content_sources_json,
+  FROM $input1_ AS t;
 
 -- Оригинал входа: один и тот же ответ разложен в обе колонки
 INSERT INTO $output1
@@ -58,7 +72,7 @@ SELECT
   dialog,
   meta,
   answer_text AS answer_1,
-  answer_producer AS answer_source_1,
+  answer_source AS answer_source_1,
   answer_text AS answer_2,
-  answer_producer AS answer_source_2
+  answer_source AS answer_source_2
 FROM $t;

@@ -223,18 +223,21 @@ $joined = (
 $rows = (
     SELECT
         ok,
+        -- AsStruct, а не <| |>: короткая запись структуры разбирается не во
+        -- всех версиях YQL, а имена полей нужны — ниже к ним обращаются
+        -- после FLATTEN BY, кортеж бы не подошёл
         AsList(
-            <| variant: '1_base',       dis: p1 != p2 |>,
-            <| variant: '2_extra_only', dis: e1 != e2 |>,
-            <| variant: '3_merged',     dis: m1 != m2 |>
+            AsStruct('1_base'       AS variant, p1 != p2 AS dis),
+            AsStruct('2_extra_only' AS variant, e1 != e2 AS dis),
+            AsStruct('3_merged'     AS variant, m1 != m2 AS dis)
         ) AS variants,
         AsList(
-            <| variant: '1_base',       side: 'A', g: gs_language, p: p1 |>,
-            <| variant: '1_base',       side: 'B', g: gs_language, p: p2 |>,
-            <| variant: '2_extra_only', side: 'A', g: gs_language, p: e1 |>,
-            <| variant: '2_extra_only', side: 'B', g: gs_language, p: e2 |>,
-            <| variant: '3_merged',     side: 'A', g: gs_language, p: m1 |>,
-            <| variant: '3_merged',     side: 'B', g: gs_language, p: m2 |>
+            AsStruct('1_base'       AS variant, 'A' AS side, gs_language AS g, p1 AS p),
+            AsStruct('1_base'       AS variant, 'B' AS side, gs_language AS g, p2 AS p),
+            AsStruct('2_extra_only' AS variant, 'A' AS side, gs_language AS g, e1 AS p),
+            AsStruct('2_extra_only' AS variant, 'B' AS side, gs_language AS g, e2 AS p),
+            AsStruct('3_merged'     AS variant, 'A' AS side, gs_language AS g, m1 AS p),
+            AsStruct('3_merged'     AS variant, 'B' AS side, gs_language AS g, m2 AS p)
         ) AS pair
     FROM $joined
 );
@@ -340,8 +343,10 @@ $sides_raw = (
         instruct_id,
         gs_language,
         AsList(
-            <| side: 'A', src: source_1, p: p1, e: e1, m: m1, w: e1_why, ans: answer_1 |>,
-            <| side: 'B', src: source_2, p: p2, e: e2, m: m2, w: e2_why, ans: answer_2 |>
+            AsStruct('A' AS side, source_1 AS src, p1 AS p, e1 AS e, m1 AS m,
+                     e1_why AS w, answer_1 AS ans),
+            AsStruct('B' AS side, source_2 AS src, p2 AS p, e2 AS e, m2 AS m,
+                     e2_why AS w, answer_2 AS ans)
         ) AS sides_list
     FROM $joined
 );

@@ -72,6 +72,16 @@ $extra_yson = (
     FROM $input3 AS e
 );
 
+-- instruct_id в таблице доп. джаджа optional: если он пустой, джойнить не по
+-- чему и подмена молча не сработает. Считаем такие строки отдельно, чтобы это
+-- было видно в метрике, а не угадывалось.
+$extra_diag = (
+    SELECT
+        COUNT(*)                              AS extra_rows_total,
+        SUM(IF(instruct_id == '', 1, 0))      AS extra_rows_no_key
+    FROM $extra_yson
+);
+
 -- GROUP BY схлопывает дубли по ключу, если джадж отработал по строке дважды:
 -- маркер берём по ИЛИ, поэтому MAX по 0/1.
 $extra = (
@@ -188,6 +198,9 @@ SELECT
     (1.0 * k.pairs_sides_disagree) / MAX_OF(1.0, 1.0 * k.pairs_total) AS sides_disagree_rate,
     -- про подмену: сколько строк нашлось в доп. джадже и сколько маркеров он добавил
     k.extra_matched_rows AS extra_matched_rows,
-    k.extra_added_true   AS extra_added_true
+    k.extra_added_true   AS extra_added_true,
+    e.extra_rows_total   AS extra_rows_total,
+    e.extra_rows_no_key  AS extra_rows_no_key
 FROM $confusion AS c
-CROSS JOIN $consistency AS k;
+CROSS JOIN $consistency AS k
+CROSS JOIN $extra_diag AS e;

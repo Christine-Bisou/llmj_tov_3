@@ -29,8 +29,8 @@ $input1_ =
 
 -- текст ответа из структуры
 $answer_text = ($a) -> {
-    RETURN Yson::ConvertToString($a['neuro_alice_md_raw_wout_reasoning'])
-        ?? Yson::ConvertToString($a['neuro_alice_md_raw']);
+    RETURN Yson::ConvertToString($a['neuro_alice_md_raw'])
+        ?? Yson::ConvertToString($a['neuro_alice_md_raw_wout_reasoning']);
 };
 
 -- продюсер из meta — он же становится source
@@ -46,13 +46,13 @@ $t =
     t.generator_dialog_json AS generator_dialog_json,
     t.session_id AS session_id,
     String::HexEncode(Digest::Sha256(ToBytes(Yson::SerializePretty(Yson::From(TableRow()))))) AS instruct_id,
-    t.right_answer AS answer,
     $answer_text(t.right_answer) AS answer_text,
     $answer_source(t.right_answer) AS answer_source,
     t.right_final_content_sources_json AS final_content_sources_json,
   FROM $input1_ AS t;
 
--- Оригинал входа: один и тот же ответ разложен в обе колонки
+-- Оригинал входа: один и тот же ответ разложен в обе колонки.
+-- В answer_* лежит текст ответа, а не структура; продюсер вынесен в answer_source_*
 INSERT INTO $output1
 SELECT
   instruct_id,
@@ -60,9 +60,11 @@ SELECT
   target_markup,
   generator_dialog_json,
   final_content_sources_json AS final_content_sources_json_1,
-  answer AS answer_1,
+  answer_text AS answer_1,
+  answer_source AS answer_source_1,
   final_content_sources_json AS final_content_sources_json_2,
-  answer AS answer_2
+  answer_text AS answer_2,
+  answer_source AS answer_source_2
 FROM $t;
 
 -- Сконвертированный вход для разметки

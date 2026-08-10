@@ -1,7 +1,7 @@
 -- Вход для разметки из одной таблицы: ответ ровно один, поэтому он дублируется
 -- в answer_1 и answer_2 — формат разметки всегда ждёт пару. Ключ склейки — instruct_id.
 --
--- В колонке answer_1 лежит структура вида:
+-- В колонке right_answer лежит структура вида:
 --   {
 --     "html_url": "...",
 --     "version": "",
@@ -22,8 +22,8 @@ $input1_ =
   SELECT
     target_markup,
     generator_dialog_json,
-    answer_1,
-    final_content_sources_json_1,
+    right_answer,
+    right_final_content_sources_json,
     session_id
   FROM $input1;
 
@@ -46,10 +46,10 @@ $t =
     t.generator_dialog_json AS generator_dialog_json,
     t.session_id AS session_id,
     String::HexEncode(Digest::Sha256(ToBytes(Yson::SerializePretty(Yson::From(TableRow()))))) AS instruct_id,
-    t.answer_1 AS answer,
-    $answer_text(t.answer_1) AS answer_text,
-    $answer_source(t.answer_1) AS answer_source,
-    t.final_content_sources_json_1 AS final_content_sources_json,
+    t.right_answer AS answer,
+    $answer_text(t.right_answer) AS answer_text,
+    $answer_source(t.right_answer) AS answer_source,
+    t.right_final_content_sources_json AS final_content_sources_json,
   FROM $input1_ AS t;
 
 -- Оригинал входа: один и тот же ответ разложен в обе колонки

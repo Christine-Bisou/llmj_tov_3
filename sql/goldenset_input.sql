@@ -27,6 +27,22 @@ $input1_ =
     session_id
   FROM $input1;
 
+-- диалог: только content и role, остальные поля сообщения (extra_info и прочее) отбрасываем
+$dialog = ($d) -> {
+    RETURN ListMap(
+        Yson::ConvertToList($d['messages']),
+        ($m) -> {
+            RETURN AsStruct(
+                -- у мультимодальных реплик content — список частей, а не строка:
+                -- такие оставляем json-ом, иначе ConvertToString вернёт NULL
+                (Yson::ConvertToString($m['content'])
+                    ?? CAST(Yson::SerializeJson($m['content']) AS String)) AS content,
+                Yson::ConvertToString($m['role']) AS role
+            );
+        }
+    );
+};
+
 -- текст ответа из структуры
 $answer_text = ($a) -> {
     RETURN Yson::ConvertToString($a['neuro_alice_md_raw'])
@@ -41,7 +57,7 @@ $answer_source = ($a) -> {
 $t =
   SELECT
     t.target_markup AS target_markup,
-    t.generator_dialog_json.messages AS dialog,
+    $dialog(t.generator_dialog_json) AS dialog,
     t.generator_dialog_json.meta AS meta,
     t.generator_dialog_json AS generator_dialog_json,
     t.session_id AS session_id,

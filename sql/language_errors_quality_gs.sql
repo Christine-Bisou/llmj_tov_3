@@ -1,11 +1,18 @@
--- Качество прохода по речевым ошибкам против золота из target_markup.
--- Отличие от language_errors_quality: золото здесь не чекбоксы разметки, а вердикт
--- голденсета — {"task": "russian_language_problem", "verdict": 0|1|2}.
--- Склейка с ответами джаджа идёт по instruct_id.
+-- Качество по речевым ошибкам против золота из target_markup.
+-- Золото здесь не чекбоксы разметки, а вердикт голденсета:
+--   {"task": "russian_language_problem", "verdict": 0|1|2} -> 0 = ошибок нет, 1+ = есть.
 --
--- Вход:  $input1 — ответы джаджа (instruct_id, dst — сырой ответ модели);
---        $input2 — голденсет (instruct_id, target_markup).
+-- Вход:  $input1 — склейка прямого и обратного прохода (выход judge_merge_v4):
+--                  instruct_id_real, markers_1_flags, markers_2_flags, parsed_ok;
+--        $input2 — голденсет: instruct_id, target_markup.
 -- Выход: одна строка с матрицей ошибок и метриками.
+--
+-- Сырой dst здесь уже не разбирается: в склеенной таблице маркеры лежат готовыми
+-- флагами, объединёнными по обоим проходам. Поэтому ни Python, ни парсинга JSON.
+--
+-- Ключи: в $input1 instruct_id — это порядковый Int64, а настоящий ключ лежит
+-- в instruct_id_real; в голденсете он называется instruct_id. Джойн идёт по ним,
+-- иначе YQL падает с «Cannot compare key columns ... Int64 ... String».
 
 PRAGMA Yson.AutoConvert;
 PRAGMA yson.DisableStrict;
@@ -19,79 +26,30 @@ DECLARE $input1 AS String;
 DECLARE $input2 AS String;
 DECLARE $output1 AS String;
 
-$script = @@#py
-import json
-import cyson
+$marker = 'language_errors';
 
+$flag = ($flags, $name) -> {
+    RETURN Yson::ConvertToBool(Yson::Lookup($flags, $name)) ?? false;
+};
 
-def _clean(s):
-    if s is None:
-        return None
-    if isinstance(s, bytes):
-        s = s.decode('utf-8', errors='ignore')
-    else:
-        s = str(s)
-    s = s.strip()
-    if s.startswith('```json'):
-        s = s[7:]
-    elif s.startswith('```'):
-        s = s[3:]
-    if s.endswith('```'):
-        s = s[:-3]
-    return s.strip()
-
-
-# Достаёт is_present у language_errors. Терпим к тому, что модель могла
-# вернуть строку вместо булева и что ключа может не быть вовсе.
-def _flag(data, markers_key):
-    markers = data.get(markers_key) or {}
-    if not isinstance(markers, dict):
-        return False
-    node = markers.get('language_errors') or {}
-    if not isinstance(node, dict):
-        return False
-    val = node.get('is_present', False)
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, str):
-        return val.strip().lower() in ('true', 'yes', '1')
-    return bool(val)
-
-
-# Возвращает {ok, p1, p2}. ok=false означает, что ответ не распарсился:
-# без этого флага сломанный JSON молча засчитался бы как «ошибок нет»
-# и просадил бы recall, не оставив следа в метриках.
-#
-# Докстринг — это сигнатура для YQL, и ничего кроме неё там быть не может:
-# любой лишний текст падает как "Expected end of string" при выводе типа.
-def parse_language_errors(s):
-    """
-    (String?) -> Yson?
-    """
-    s = _clean(s)
-    if not s:
-        return cyson.dumps({'ok': False, 'p1': False, 'p2': False})
-    try:
-        data = json.loads(s, strict=False)
-        if not isinstance(data, dict):
-            raise ValueError('not an object')
-        return cyson.dumps({
-            'ok': True,
-            'p1': _flag(data, 'model_1_markers'),
-            'p2': _flag(data, 'model_2_markers'),
-        })
-    except Exception:
-        return cyson.dumps({'ok': False, 'p1': False, 'p2': False})
-@@;
-
-$parse_le = Python3::parse_language_errors($script);
+-- Строки без instruct_id_real джойнить не по чему; COALESCE снимает Optional,
+-- чтобы ключи с обеих сторон были одного типа String.
+$pred = (
+    SELECT
+        COALESCE(CAST(p.instruct_id_real AS String), '') AS instruct_id,
+        $flag(p.markers_1_flags, $marker)                AS p1,
+        $flag(p.markers_2_flags, $marker)                AS p2,
+        p.parsed_ok                                      AS ok
+    FROM $input1 AS p
+    WHERE p.instruct_id_real IS NOT NULL
+);
 
 -- Золото: verdict = 0 — речевых ошибок нет, 1 и выше — есть.
 -- Строки без вердикта отбрасываем, иначе NULL стал бы «золотым false»
 -- и разбавил бы отрицательный класс.
 $gold = (
     SELECT
-        g.instruct_id                                  AS instruct_id,
+        g.instruct_id                                    AS instruct_id,
         Yson::ConvertToInt64(g.target_markup['verdict']) AS verdict
     FROM $input2 AS g
 );
@@ -104,13 +62,15 @@ $gold_ = (
     WHERE verdict IS NOT NULL
 );
 
-$parsed = (
+$joined = (
     SELECT
-        $parse_le(p.dst) AS le,
-        g.gs_language    AS gs_language
-    FROM $input1 AS p
+        p.ok          AS ok,
+        p.p1          AS p1,
+        p.p2          AS p2,
+        g.gs_language AS gs_language
+    FROM $pred AS p
     INNER JOIN $gold_ AS g
-    ON p.instruct_id = g.instruct_id
+    USING (instruct_id)
 );
 
 -- Ответы в паре одинаковые (голденсет размножен в answer_1/answer_2), поэтому
@@ -118,21 +78,13 @@ $parsed = (
 -- идентичных ответах — это шум джаджа, его считаем отдельно.
 $rows = (
     SELECT
-        Yson::LookupBool(le, 'ok') ?? false AS ok,
-        (Yson::LookupBool(le, 'p1') ?? false) != (Yson::LookupBool(le, 'p2') ?? false) AS sides_disagree,
+        ok,
+        p1 != p2 AS sides_disagree,
         AsList(
-            <|
-                side: 'A',
-                g: gs_language,
-                p: Yson::LookupBool(le, 'p1') ?? false
-            |>,
-            <|
-                side: 'B',
-                g: gs_language,
-                p: Yson::LookupBool(le, 'p2') ?? false
-            |>
+            <| side: 'A', g: gs_language, p: p1 |>,
+            <| side: 'B', g: gs_language, p: p2 |>
         ) AS pair
-    FROM $parsed
+    FROM $joined
 );
 
 $flat = (
@@ -160,8 +112,8 @@ $confusion = (
 -- считаем по $rows, а не по $flat.
 $consistency = (
     SELECT
-        COUNT(*)                          AS pairs_total,
-        SUM(IF(sides_disagree, 1, 0))     AS pairs_sides_disagree
+        COUNT(*)                      AS pairs_total,
+        SUM(IF(sides_disagree, 1, 0)) AS pairs_sides_disagree
     FROM $rows
 );
 

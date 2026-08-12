@@ -20,8 +20,9 @@ PRAGMA yt.InferSchema = '2';
 -- флаг language_errors (по OR со старым) и его обоснование:
 --   checkboxes_A/checkboxes_B -> tov_minus_language_errors (во всех слотах)
 --   markers_A/markers_B       -> имя language_errors в списке маркеров
---   comments_A/comments_B     -> explanation в слот воркера reverse
---   raw_outputs[reverse].comment_A/comment_B -> explanation
+-- Обоснование пишется только когда маркер зажёгся заново (было false, стало
+-- true), в слот воркера reverse: comments_A/comments_B и, в сыром формате,
+-- raw_outputs[reverse].comment_A/comment_B.
 -- Комментарий из слота direct (разбор интента и прямой речи) и все остальные
 -- поля разметки не трогаем.
 
@@ -212,9 +213,9 @@ def _current_flag(data, side):
 
 
 # Флаг складываем по OR: новый проход может зажечь маркер, но не гасит уже
-# проставленный. Обоснование при этом подменяем не всегда — если OR удержал
-# старый true вопреки новому false, то новый текст («ошибок нет») спорил бы
-# с флагом, поэтому в этом случае оставляем прежний комментарий.
+# проставленный. Обоснование подменяем только там, где маркер зажёгся заново
+# (было false, стало true) — в остальных случаях старый комментарий уже
+# соответствует итоговому флагу, и переписывать его незачем.
 #
 # Итоговый флаг пишем во все слоты, а не только в языковой: проходы судят один
 # и тот же ответ, и разъехавшиеся слоты снова разойдутся при пересборке.
@@ -225,7 +226,7 @@ def _patch_doc(data, flags, whys):
     for side in ('A', 'B'):
         was = _current_flag(data, side)
         final[side] = was or flags[side]
-        keep[side] = was and not flags[side]
+        keep[side] = was or not flags[side]
     # агрегат: чекбоксы, маркеры и комментарии на верхнем уровне
     for side in ('A', 'B'):
         cb = data.get('checkboxes_' + side)

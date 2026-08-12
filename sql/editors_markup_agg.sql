@@ -252,6 +252,14 @@ $base = (
         $str(t.outputValues.checkbox_answers.answer_b.comment) AS comment_B_raw,
 
         t.inputValues.metadata AS meta,
+
+        -- Разметочная обвязка задания: что за корзина, какой тикет, какой пул.
+        -- Значения бывают строкой "null" — так их и кладёт форма, не трогаем.
+        $str(t.inputValues.metadata.priority_type) AS meta_priority_type,
+        $str(t.inputValues.metadata.basket_table) AS meta_basket_table,
+        $str(t.inputValues.metadata.pool_type) AS meta_pool_type,
+        $str(t.inputValues.metadata.ticket) AS meta_ticket,
+
         t.inputValues.checkboxes AS checkboxes,
         COALESCE(t.inputValues.dialog, t.inputValues.dialog_altformat) AS dialog,
         t.inputValues.markers AS markers
@@ -301,6 +309,10 @@ $norm = (
         b.comment_B_raw AS comments_B_raw,
 
         b.meta AS meta,
+        b.meta_priority_type AS meta_priority_type,
+        b.meta_basket_table AS meta_basket_table,
+        b.meta_pool_type AS meta_pool_type,
+        b.meta_ticket AS meta_ticket,
         b.checkboxes AS checkboxes,
         b.dialog AS dialog,
         b.markers AS markers
@@ -339,6 +351,10 @@ $main_agg = (
         AGGREGATE_LIST(comments_B_raw) AS comments_B,
 
         SOME(meta) AS meta,
+        SOME(meta_priority_type) AS meta_priority_type,
+        SOME(meta_basket_table) AS meta_basket_table,
+        SOME(meta_pool_type) AS meta_pool_type,
+        SOME(meta_ticket) AS meta_ticket,
         SOME(checkboxes) AS checkboxes,
         SOME(dialog) AS dialog,
         SOME(markers) AS markers
@@ -474,6 +490,14 @@ SELECT
     m.comments_B AS comments_B,
     IF(a.annotations IS NULL, Yson::From(AsList()), a.annotations) AS annotations,
     IF(m.meta IS NULL, Yson::From(ToDict(AsList())), m.meta) AS metadata,
+    Yson::From(ToDict(AsList(
+        AsTuple("priority_type", m.meta_priority_type),
+        AsTuple("basket_table", m.meta_basket_table),
+        AsTuple("pool_type", m.meta_pool_type),
+        AsTuple("ticket", m.meta_ticket),
+        AsTuple("pool_id", COALESCE(CAST(m.pool_id AS String), "")),
+        AsTuple("project_id", COALESCE(CAST(p.project_id AS String), ""))
+    ))) AS markup_metadata,
     m.checkboxes AS checkboxes,
     m.dialog AS dialog,
     m.markers AS markers

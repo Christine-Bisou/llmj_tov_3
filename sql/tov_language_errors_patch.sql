@@ -18,11 +18,12 @@ PRAGMA yt.InferSchema = '2';
 -- input_final_messages, input_meta, input_render_data, raw_tov_markup),
 -- но внутри raw_tov_markup и agg_tov_markup у каждого ответа
 -- заменены флаг language_errors и его обоснование:
---   checkboxes_A/checkboxes_B -> tov_minus_language_errors
---   markers_A/markers_B       -> имя маркера в списке (или объект с is_present/explanation)
---   comment_A/comment_B       -> explanation
---   comments_A/comments_B     -> explanation в каждый элемент списка
--- Остальные поля разметки не трогаем.
+--   checkboxes_A/checkboxes_B -> tov_minus_language_errors (во всех слотах)
+--   markers_A/markers_B       -> имя language_errors в списке маркеров
+--   comments_A/comments_B     -> explanation в слот воркера reverse
+--   raw_outputs[reverse].comment_A/comment_B -> explanation
+-- Комментарий из слота direct (разбор интента и прямой речи) и все остальные
+-- поля разметки не трогаем.
 
 DECLARE $input1 AS String;
 DECLARE $input2 AS String;
@@ -35,6 +36,8 @@ import cyson
 CHECKBOX_KEY = 'tov_minus_language_errors'
 MARKER_NAME = 'language_errors'
 NAME_KEYS = ('name', 'marker', 'id', 'key', 'code')
+# слот воркера, в котором лежит комментарий про речевые ошибки
+LANG_WORKER = 'reverse'
 
 
 def _clean(s):
@@ -170,34 +173,58 @@ def _patch_markers(value, flag, why):
     return value
 
 
-# Идём по всей структуре и правим поля, у которых суффикс говорит о стороне
-# (_A / _B). Так один обход покрывает и raw_tov_markup с его raw_outputs,
-# и agg_tov_markup, и не зависит от уровня вложенности чекбоксов.
-def _walk(node, flags, whys):
-    if isinstance(node, list):
-        for item in node:
-            _walk(item, flags, whys)
+# Комментарии лежат по слотам воркеров: в слоте direct — разбор интента и
+# прямой речи, в слоте reverse — пословный скан на речевые ошибки. Подменяем
+# только второй, иначе разбор интента затрётся обоснованием про грамматику.
+def _lang_slot(worker_ids, count):
+    if count <= 0:
+        return None
+    if isinstance(worker_ids, list) and LANG_WORKER in worker_ids:
+        idx = worker_ids.index(LANG_WORKER)
+        if idx < count:
+            return idx
+    return count - 1
+
+
+def _lang_output(outs):
+    for i, out in enumerate(outs):
+        if isinstance(out, dict) and _text(out.get('worker_id')) == LANG_WORKER:
+            return i
+    return len(outs) - 1
+
+
+# Чекбокс правим во всех слотах, а не только в языковом: проходы судят один
+# и тот же ответ, и если оставить у direct старый флаг, любая пересборка
+# агрегата воскресит отменённую ошибку.
+def _patch_doc(data, flags, whys):
+    if not isinstance(data, dict):
         return
-    if not isinstance(node, dict):
-        return
-    for key in list(node.keys()):
-        value = node[key]
-        side = key[-1] if len(key) > 2 and key[-2:] in ('_A', '_B') else None
-        if side is None:
-            _walk(value, flags, whys)
-            continue
-        base = key[:-2]
-        flag, why = flags[side], whys[side]
-        if base == 'checkboxes' and isinstance(value, dict):
-            value[CHECKBOX_KEY] = flag
-        elif base == 'markers':
-            node[key] = _patch_markers(value, flag, why)
-        elif base == 'comment':
-            node[key] = why
-        elif base == 'comments':
-            node[key] = [why for _ in value] if isinstance(value, list) else why
-        else:
-            _walk(value, flags, whys)
+    # агрегат: чекбоксы, маркеры и комментарии на верхнем уровне
+    for side in ('A', 'B'):
+        cb = data.get('checkboxes_' + side)
+        if isinstance(cb, dict):
+            cb[CHECKBOX_KEY] = flags[side]
+        if ('markers_' + side) in data:
+            data['markers_' + side] = _patch_markers(
+                data['markers_' + side], flags[side], whys[side])
+        comments = data.get('comments_' + side)
+        if isinstance(comments, list):
+            slot = _lang_slot(data.get('worker_ids'), len(comments))
+            if slot is not None:
+                comments[slot] = whys[side]
+    # сырой формат: то же самое внутри raw_outputs
+    outs = data.get('raw_outputs')
+    if isinstance(outs, list) and outs:
+        lang = _lang_output(outs)
+        for i, out in enumerate(outs):
+            if not isinstance(out, dict):
+                continue
+            for side in ('A', 'B'):
+                cb = out.get('checkboxes_' + side)
+                if isinstance(cb, dict):
+                    cb[CHECKBOX_KEY] = flags[side]
+                if i == lang and ('comment_' + side) in out:
+                    out['comment_' + side] = whys[side]
 
 
 # flag_a is NULL — судейского вердикта по строке нет (не сматчилось по ключу
@@ -215,7 +242,7 @@ def patch_markup(markup, flag_a, flag_b, why_a, why_b):
         return cyson.dumps(data)
     flags = {'A': _as_bool(flag_a), 'B': _as_bool(flag_b)}
     whys = {'A': _text(why_a), 'B': _text(why_b)}
-    _walk(data, flags, whys)
+    _patch_doc(data, flags, whys)
     return cyson.dumps(data)
 @@;
 

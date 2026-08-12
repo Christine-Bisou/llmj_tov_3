@@ -240,8 +240,6 @@ $main_agg = (
         SOME(source_A) AS source_A,
         SOME(source_B) AS source_B,
 
-        COUNT(*) AS task_count,
-        AGGREGATE_LIST(task_id) AS task_ids,
         AGGREGATE_LIST(assignment_id) AS assignment_ids,
         AGGREGATE_LIST(worker_id) AS worker_ids,
         AGGREGATE_LIST(editors_markup_dt) AS editors_markup_dts,
@@ -363,8 +361,7 @@ SELECT
     p.project_id AS project_id,
     m.source_A AS source_A,
     m.source_B AS source_B,
-    m.task_count AS task_count,
-    m.task_ids AS task_ids,
+    m.task_id AS task_id,
     m.assignment_ids AS assignment_ids,
     m.worker_ids AS worker_ids,
     m.editors_markup_dts AS editors_markup_dts,

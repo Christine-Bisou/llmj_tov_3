@@ -490,14 +490,16 @@ SELECT
     m.comments_B AS comments_B,
     IF(a.annotations IS NULL, Yson::From(AsList()), a.annotations) AS annotations,
     IF(m.meta IS NULL, Yson::From(ToDict(AsList())), m.meta) AS metadata,
-    Yson::From(ToDict(AsList(
+    -- Just: строгий Yson в YT не пишется, колонка должна быть Optional<Yson>.
+    -- Остальные Yson-колонки оптиональны сами — они приходят из LEFT JOIN.
+    Just(Yson::From(ToDict(AsList(
         AsTuple("priority_type", m.meta_priority_type),
         AsTuple("basket_table", m.meta_basket_table),
         AsTuple("pool_type", m.meta_pool_type),
         AsTuple("ticket", m.meta_ticket),
         AsTuple("pool_id", COALESCE(CAST(m.pool_id AS String), "")),
         AsTuple("project_id", COALESCE(CAST(p.project_id AS String), ""))
-    ))) AS markup_metadata,
+    )))) AS markup_metadata,
     m.checkboxes AS checkboxes,
     m.dialog AS dialog,
     m.markers AS markers

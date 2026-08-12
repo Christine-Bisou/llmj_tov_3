@@ -12,9 +12,9 @@ PRAGMA yt.InferSchema = '2';
 --           где dst — JSON с model_1_markers / model_2_markers, внутри которых
 --           у language_errors лежат is_present и explanation.
 --           model_1 относится к ответу A, model_2 — к ответу B.
--- $input2 — разметка: for_join + колонки raw_tov и agg_tov.
+-- $input2 — разметка: for_join + колонки raw_tov_markup и agg_tov_markup.
 --
--- На выходе — те же строки $input2, но внутри raw_tov и agg_tov у каждого ответа
+-- На выходе — те же строки $input2, но внутри raw_tov_markup и agg_tov_markup у каждого ответа
 -- заменены флаг language_errors и его обоснование:
 --   checkboxes_A/checkboxes_B -> tov_minus_language_errors
 --   markers_A/markers_B       -> имя маркера в списке (или объект с is_present/explanation)
@@ -169,8 +169,8 @@ def _patch_markers(value, flag, why):
 
 
 # Идём по всей структуре и правим поля, у которых суффикс говорит о стороне
-# (_A / _B). Так один обход покрывает и raw_tov с его raw_outputs, и agg_tov,
-# и не зависит от того, на каком уровне вложенности лежат чекбоксы.
+# (_A / _B). Так один обход покрывает и raw_tov_markup с его raw_outputs,
+# и agg_tov_markup, и не зависит от уровня вложенности чекбоксов.
 def _walk(node, flags, whys):
     if isinstance(node, list):
         for item in node:
@@ -256,10 +256,10 @@ $joined = (
 -- Дополнительные колонки идут ДО j.*: WITHOUT обязан быть последним в списке.
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
-    $patch(CAST(j.raw_tov AS String), j.le_a, j.le_b, j.why_a, j.why_b) AS raw_tov,
-    $patch(CAST(j.agg_tov AS String), j.le_a, j.le_b, j.why_a, j.why_b) AS agg_tov,
+    $patch(CAST(j.raw_tov_markup AS String), j.le_a, j.le_b, j.why_a, j.why_b) AS raw_tov_markup,
+    $patch(CAST(j.agg_tov_markup AS String), j.le_a, j.le_b, j.why_a, j.why_b) AS agg_tov_markup,
     j.*,
     WITHOUT IF EXISTS
-        j.raw_tov, j.agg_tov,
+        j.raw_tov_markup, j.agg_tov_markup,
         j.le_ok, j.le_a, j.le_b, j.why_a, j.why_b
 FROM $joined AS j;

@@ -9,9 +9,10 @@ PRAGMA yt.InferSchema = '2';
 -- Подмена маркера language_errors в готовой разметке.
 --
 -- $input1 — выход отдельного прохода по речевым ошибкам: for_join + dst,
---           где dst = {"model_1_markers": {"language_errors": {is_present, explanation}}, ...}.
+--           где dst — JSON с model_1_markers / model_2_markers, внутри которых
+--           у language_errors лежат is_present и explanation.
 --           model_1 относится к ответу A, model_2 — к ответу B.
--- $input2 — разметка: ключ + колонки raw_tov и agg_tov.
+-- $input2 — разметка: for_join + колонки raw_tov и agg_tov.
 --
 -- На выходе — те же строки $input2, но внутри raw_tov и agg_tov у каждого ответа
 -- заменены флаг language_errors и его обоснование:
@@ -249,7 +250,7 @@ $joined = (
         Yson::LookupString(l.le, 'why2') ?? '' AS why_b
     FROM $input2 AS m
     LEFT JOIN $le_one AS l
-    ON CAST(m.instruct_id AS String) = l.join_key
+    ON CAST(m.for_join AS String) = l.join_key
 );
 
 -- Дополнительные колонки идут ДО j.*: WITHOUT обязан быть последним в списке.

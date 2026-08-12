@@ -14,7 +14,9 @@ PRAGMA yt.InferSchema = '2';
 --           model_1 относится к ответу A, model_2 — к ответу B.
 -- $input2 — разметка: for_join + колонки raw_tov_markup и agg_tov_markup.
 --
--- На выходе — те же строки $input2, но внутри raw_tov_markup и agg_tov_markup у каждого ответа
+-- На выходе — та же схема, что у $input2 (agg_tov_markup, answers,
+-- input_final_messages, input_meta, input_render_data, raw_tov_markup),
+-- но внутри raw_tov_markup и agg_tov_markup у каждого ответа
 -- заменены флаг language_errors и его обоснование:
 --   checkboxes_A/checkboxes_B -> tov_minus_language_errors
 --   markers_A/markers_B       -> имя маркера в списке (или объект с is_present/explanation)
@@ -243,7 +245,6 @@ $le_one = (
 $joined = (
     SELECT
         m.*,
-        Yson::LookupBool(l.le, 'ok') ?? false AS le_ok,
         IF(Yson::LookupBool(l.le, 'ok') ?? false, Yson::LookupBool(l.le, 'p1') ?? false) AS le_a,
         IF(Yson::LookupBool(l.le, 'ok') ?? false, Yson::LookupBool(l.le, 'p2') ?? false) AS le_b,
         Yson::LookupString(l.le, 'why1') ?? '' AS why_a,
@@ -253,13 +254,14 @@ $joined = (
     ON CAST(m.for_join AS String) = l.join_key
 );
 
--- Дополнительные колонки идут ДО j.*: WITHOUT обязан быть последним в списке.
+-- Схема выхода повторяет схему разметки: только эти шесть колонок, все Yson.
+-- for_join нужен лишь для джойна и до выхода не доезжает.
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
-    $patch(CAST(j.raw_tov_markup AS String), j.le_a, j.le_b, j.why_a, j.why_b) AS raw_tov_markup,
     $patch(CAST(j.agg_tov_markup AS String), j.le_a, j.le_b, j.why_a, j.why_b) AS agg_tov_markup,
-    j.*,
-    WITHOUT IF EXISTS
-        j.raw_tov_markup, j.agg_tov_markup,
-        j.le_ok, j.le_a, j.le_b, j.why_a, j.why_b
+    j.answers                                                                  AS answers,
+    j.input_final_messages                                                     AS input_final_messages,
+    j.input_meta                                                               AS input_meta,
+    j.input_render_data                                                        AS input_render_data,
+    $patch(CAST(j.raw_tov_markup AS String), j.le_a, j.le_b, j.why_a, j.why_b) AS raw_tov_markup
 FROM $joined AS j;

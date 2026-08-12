@@ -10,6 +10,14 @@ PRAGMA yson.DisableStrict;
 $str = ($x) -> (nvl(Yson::ConvertToString($x), ""));
 $bool = ($x) -> (Yson::ConvertToBool($x) ?? False);
 $i64 = ($x) -> (Yson::ConvertToInt64($x));
+-- Оценки приходят и целыми, и дробными, поэтому пробуем оба числовых типа.
+-- NULL здесь значит «оценки нет», нули подставляются уже при упаковке.
+$dbl = ($x) -> (
+    COALESCE(
+        Yson::ConvertToDouble($x),
+        CAST(Yson::ConvertToInt64($x) AS Double)
+    )
+);
 
 $fmt_dt = DateTime::Format("%Y-%m-%d");
 
@@ -59,6 +67,60 @@ $checkbox_kv_list = ($node) -> {
                 ($x) -> { RETURN NOT $is_clarity_key($x.key); }
             ),
             ($x) -> { RETURN $x.key; }
+        )
+    );
+};
+
+-- pointwise_ratings хранит критерии внутри answer_a/answer_b, а общую оценку —
+-- рядом в overall_a/overall_b. Сводим то и другое в один словарь критерий -> оценка.
+$pointwise_dict = ($node, $overall) -> {
+    $overall_val = $dbl($overall);
+    RETURN ToDict(
+        ListExtend(
+            IF(
+                $node IS NULL,
+                AsList(),
+                ListMap(
+                    ListFilter(
+                        DictItems(Yson::ConvertToDict($node)),
+                        ($kv) -> { RETURN $dbl($kv.1) IS NOT NULL; }
+                    ),
+                    ($kv) -> {
+                        RETURN AsTuple(CAST($kv.0 AS String), Unwrap($dbl($kv.1)));
+                    }
+                )
+            ),
+            IF(
+                $overall_val IS NULL,
+                AsList(),
+                AsList(AsTuple("overall", Unwrap($overall_val)))
+            )
+        )
+    );
+};
+
+-- Ключи собираем по всем разметчикам задания, чтобы списки оценок были одной
+-- длины: если разметчик критерий не оценил, на его месте оказывается 0.
+$pack_pointwise = ($rows) -> {
+    $sorted = ListSort($rows, ($x) -> { RETURN $x.assignment_id; });
+    RETURN Yson::From(
+        ToDict(
+            ListMap(
+                ListSort(
+                    ListUniq(
+                        ListFlatMap($sorted, ($x) -> { RETURN DictKeys($x.ratings); })
+                    )
+                ),
+                ($key) -> {
+                    RETURN AsTuple(
+                        $key,
+                        ListMap(
+                            $sorted,
+                            ($x) -> { RETURN COALESCE(DictLookup($x.ratings, $key), 0.0); }
+                        )
+                    );
+                }
+            )
         )
     );
 };
@@ -174,6 +236,15 @@ $base = (
         $checkbox_kv_list(t.outputValues.checkbox_answers.answer_a.checkboxes) AS checkboxes_A_kv,
         $checkbox_kv_list(t.outputValues.checkbox_answers.answer_b.checkboxes) AS checkboxes_B_kv,
 
+        $pointwise_dict(
+            t.outputValues.pointwise_ratings.answer_a,
+            t.outputValues.pointwise_ratings.overall_a
+        ) AS pointwise_A_dict,
+        $pointwise_dict(
+            t.outputValues.pointwise_ratings.answer_b,
+            t.outputValues.pointwise_ratings.overall_b
+        ) AS pointwise_B_dict,
+
         $annotations_struct_list(t.outputValues.annotations) AS annotations_list,
 
         $str(t.outputValues.general_comment) AS general_comment_raw,
@@ -212,6 +283,9 @@ $norm = (
 
         b.checkboxes_A_kv AS checkboxes_A_kv,
         b.checkboxes_B_kv AS checkboxes_B_kv,
+
+        b.pointwise_A_dict AS pointwise_A_dict,
+        b.pointwise_B_dict AS pointwise_B_dict,
 
         b.annotations_list AS annotations_list,
 
@@ -324,6 +398,23 @@ $cbB_packed = (
     GROUP BY task_id
 );
 
+$pointwise_packed = (
+    SELECT
+        task_id,
+        $pack_pointwise(
+            AGGREGATE_LIST(
+                <|"assignment_id": assignment_id, "ratings": pointwise_A_dict|>
+            )
+        ) AS pointwise_A,
+        $pack_pointwise(
+            AGGREGATE_LIST(
+                <|"assignment_id": assignment_id, "ratings": pointwise_B_dict|>
+            )
+        ) AS pointwise_B
+    FROM $norm
+    GROUP BY task_id
+);
+
 $annotations_by_worker = (
     SELECT
         task_id,
@@ -376,6 +467,8 @@ SELECT
     m.diff_pa_winner AS diff_pa_winner,
     IF(cA.checkboxes_A IS NULL, Yson::From(ToDict(AsList())), cA.checkboxes_A) AS checkboxes_A,
     IF(cB.checkboxes_B IS NULL, Yson::From(ToDict(AsList())), cB.checkboxes_B) AS checkboxes_B,
+    IF(pw.pointwise_A IS NULL, Yson::From(ToDict(AsList())), pw.pointwise_A) AS pointwise_A,
+    IF(pw.pointwise_B IS NULL, Yson::From(ToDict(AsList())), pw.pointwise_B) AS pointwise_B,
     m.general_comments AS general_comments,
     m.comments_A AS comments_A,
     m.comments_B AS comments_B,
@@ -390,6 +483,8 @@ LEFT JOIN $cbA_packed AS cA
     ON m.task_id = cA.task_id
 LEFT JOIN $cbB_packed AS cB
     ON m.task_id = cB.task_id
+LEFT JOIN $pointwise_packed AS pw
+    ON m.task_id = pw.task_id
 LEFT JOIN $annotations_packed AS a
     ON m.task_id = a.task_id
 ;

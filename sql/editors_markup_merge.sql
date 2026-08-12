@@ -167,6 +167,7 @@ $prep = (
         markers,
         annotations,
         checkboxes,
+        markup_metadata,
         checkboxes_A,
         checkboxes_B,
         pointwise_A,
@@ -733,6 +734,7 @@ $metadata_rows = (
         SOME(markers) AS markers,
         SOME(annotations) AS annotations,
         SOME(checkboxes) AS checkboxes,
+        SOME(markup_metadata) AS markup_metadata,
         SOME(task_id) AS task_id,
         SOME(worker_ids) AS worker_ids,
         SOME(pool_id) AS pool_id,
@@ -822,6 +824,8 @@ $result_markup = (
             AsTuple("task_id", Just(Yson::From($str_string(m.task_id)))),
             AsTuple("pool_id", Just(Yson::From(m.pool_id))),
             AsTuple("project_id", Just(Yson::From(m.project_id))),
+            -- Обвязка задания собрана первым этапом, здесь идёт как есть.
+            AsTuple("markup_metadata", COALESCE(m.markup_metadata, $empty_dict)),
             AsTuple("worker_ids", Just(Yson::From(m.worker_ids))),
 
             AsTuple(
@@ -900,6 +904,7 @@ $result_markup = (
             AsTuple("task_id", Just(Yson::From($str_string(m.task_id)))),
             AsTuple("pool_id", Just(Yson::From(m.pool_id))),
             AsTuple("project_id", Just(Yson::From(m.project_id))),
+            AsTuple("markup_metadata", COALESCE(m.markup_metadata, $empty_dict)),
 
             AsTuple("answer_A", Just(Yson::From(m.answer_A))),
             AsTuple("answer_B", Just(Yson::From(m.answer_B))),

@@ -16,8 +16,8 @@ PRAGMA yt.InferSchema = '2';
 --
 -- На выходе — та же схема, что у $input2 (agg_tov_markup, answers,
 -- input_final_messages, input_meta, input_render_data, raw_tov_markup),
--- но внутри raw_tov_markup и agg_tov_markup у каждого ответа
--- заменены флаг language_errors и его обоснование:
+-- но внутри raw_tov_markup и agg_tov_markup у каждого ответа обновлены
+-- флаг language_errors (по OR со старым) и его обоснование:
 --   checkboxes_A/checkboxes_B -> tov_minus_language_errors (во всех слотах)
 --   markers_A/markers_B       -> имя language_errors в списке маркеров
 --   comments_A/comments_B     -> explanation в слот воркера reverse
@@ -193,22 +193,49 @@ def _lang_output(outs):
     return len(outs) - 1
 
 
-# Чекбокс правим во всех слотах, а не только в языковом: проходы судят один
-# и тот же ответ, и если оставить у direct старый флаг, любая пересборка
-# агрегата воскресит отменённую ошибку.
+# Текущее состояние флага по стороне: в агрегате он один, в сыром формате
+# слоты могут расходиться (direct нашёл ошибку, reverse — нет). Берём OR по
+# слотам — ровно так же, как флаг попал в агрегат при его сборке.
+def _current_flag(data, side):
+    found = False
+    cb = data.get('checkboxes_' + side)
+    if isinstance(cb, dict):
+        found = found or _as_bool(cb.get(CHECKBOX_KEY))
+    outs = data.get('raw_outputs')
+    if isinstance(outs, list):
+        for out in outs:
+            if isinstance(out, dict):
+                slot_cb = out.get('checkboxes_' + side)
+                if isinstance(slot_cb, dict):
+                    found = found or _as_bool(slot_cb.get(CHECKBOX_KEY))
+    return found
+
+
+# Флаг складываем по OR: новый проход может зажечь маркер, но не гасит уже
+# проставленный. Обоснование при этом подменяем не всегда — если OR удержал
+# старый true вопреки новому false, то новый текст («ошибок нет») спорил бы
+# с флагом, поэтому в этом случае оставляем прежний комментарий.
+#
+# Итоговый флаг пишем во все слоты, а не только в языковой: проходы судят один
+# и тот же ответ, и разъехавшиеся слоты снова разойдутся при пересборке.
 def _patch_doc(data, flags, whys):
     if not isinstance(data, dict):
         return
+    final, keep = {}, {}
+    for side in ('A', 'B'):
+        was = _current_flag(data, side)
+        final[side] = was or flags[side]
+        keep[side] = was and not flags[side]
     # агрегат: чекбоксы, маркеры и комментарии на верхнем уровне
     for side in ('A', 'B'):
         cb = data.get('checkboxes_' + side)
         if isinstance(cb, dict):
-            cb[CHECKBOX_KEY] = flags[side]
+            cb[CHECKBOX_KEY] = final[side]
         if ('markers_' + side) in data:
             data['markers_' + side] = _patch_markers(
-                data['markers_' + side], flags[side], whys[side])
+                data['markers_' + side], final[side], whys[side])
         comments = data.get('comments_' + side)
-        if isinstance(comments, list):
+        if isinstance(comments, list) and not keep[side]:
             slot = _lang_slot(data.get('worker_ids'), len(comments))
             if slot is not None:
                 comments[slot] = whys[side]
@@ -222,8 +249,8 @@ def _patch_doc(data, flags, whys):
             for side in ('A', 'B'):
                 cb = out.get('checkboxes_' + side)
                 if isinstance(cb, dict):
-                    cb[CHECKBOX_KEY] = flags[side]
-                if i == lang and ('comment_' + side) in out:
+                    cb[CHECKBOX_KEY] = final[side]
+                if i == lang and not keep[side] and ('comment_' + side) in out:
                     out['comment_' + side] = whys[side]
 
 

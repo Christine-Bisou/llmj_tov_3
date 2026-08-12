@@ -19,6 +19,12 @@ $dbl = ($x) -> (
     )
 );
 
+-- rownum приходит числом, строкой его не прочитать. Но в части выгрузок он
+-- лежит строкой, поэтому пробуем оба вида.
+$num = ($x) -> (
+    COALESCE($i64($x), CAST(Yson::ConvertToString($x) AS Int64))
+);
+
 $fmt_dt = DateTime::Format("%Y-%m-%d");
 
 $winner_norm = ($raw, $src_a, $src_b) -> (
@@ -259,6 +265,7 @@ $base = (
         $str(t.inputValues.metadata.basket_table) AS meta_basket_table,
         $str(t.inputValues.metadata.pool_type) AS meta_pool_type,
         $str(t.inputValues.metadata.ticket) AS meta_ticket,
+        $num(t.inputValues.metadata.rownum) AS meta_rownum,
 
         t.inputValues.checkboxes AS checkboxes,
         COALESCE(t.inputValues.dialog, t.inputValues.dialog_altformat) AS dialog,
@@ -313,6 +320,7 @@ $norm = (
         b.meta_basket_table AS meta_basket_table,
         b.meta_pool_type AS meta_pool_type,
         b.meta_ticket AS meta_ticket,
+        b.meta_rownum AS meta_rownum,
         b.checkboxes AS checkboxes,
         b.dialog AS dialog,
         b.markers AS markers
@@ -355,6 +363,7 @@ $main_agg = (
         SOME(meta_basket_table) AS meta_basket_table,
         SOME(meta_pool_type) AS meta_pool_type,
         SOME(meta_ticket) AS meta_ticket,
+        SOME(meta_rownum) AS meta_rownum,
         SOME(checkboxes) AS checkboxes,
         SOME(dialog) AS dialog,
         SOME(markers) AS markers
@@ -490,15 +499,18 @@ SELECT
     m.comments_B AS comments_B,
     IF(a.annotations IS NULL, Yson::From(AsList()), a.annotations) AS annotations,
     IF(m.meta IS NULL, Yson::From(ToDict(AsList())), m.meta) AS metadata,
-    -- Just: строгий Yson в YT не пишется, колонка должна быть Optional<Yson>.
-    -- Остальные Yson-колонки оптиональны сами — они приходят из LEFT JOIN.
+    -- Внешний Just: строгий Yson в YT не пишется, колонка должна быть
+    -- Optional<Yson>. Остальные Yson-колонки оптиональны сами — они приходят
+    -- из LEFT JOIN. Значения обёрнуты в Yson поштучно, чтобы rownum остался
+    -- числом: в словаре из одних строк по нему нельзя было бы сортировать.
     Just(Yson::From(ToDict(AsList(
-        AsTuple("priority_type", m.meta_priority_type),
-        AsTuple("basket_table", m.meta_basket_table),
-        AsTuple("pool_type", m.meta_pool_type),
-        AsTuple("ticket", m.meta_ticket),
-        AsTuple("pool_id", COALESCE(CAST(m.pool_id AS String), "")),
-        AsTuple("project_id", COALESCE(CAST(p.project_id AS String), ""))
+        AsTuple("priority_type", Just(Yson::From(m.meta_priority_type))),
+        AsTuple("basket_table", Just(Yson::From(m.meta_basket_table))),
+        AsTuple("pool_type", Just(Yson::From(m.meta_pool_type))),
+        AsTuple("ticket", Just(Yson::From(m.meta_ticket))),
+        AsTuple("rownum", Just(Yson::From(m.meta_rownum))),
+        AsTuple("pool_id", Just(Yson::From(COALESCE(CAST(m.pool_id AS String), "")))),
+        AsTuple("project_id", Just(Yson::From(COALESCE(CAST(p.project_id AS String), ""))))
     )))) AS markup_metadata,
     m.checkboxes AS checkboxes,
     m.dialog AS dialog,

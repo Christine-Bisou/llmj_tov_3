@@ -1,0 +1,398 @@
+DECLARE $input1 AS String;
+DECLARE $input2 AS String;
+DECLARE $output1 AS String;
+
+PRAGMA AnsiInForEmptyOrNullableItemsCollections;
+PRAGMA AnsiOptionalAs;
+PRAGMA yt.UseNativeYtTypes;
+PRAGMA yson.DisableStrict;
+
+$str = ($x) -> (nvl(Yson::ConvertToString($x), ""));
+$bool = ($x) -> (Yson::ConvertToBool($x) ?? False);
+$i64 = ($x) -> (Yson::ConvertToInt64($x));
+
+$fmt_dt = DateTime::Format("%Y-%m-%d");
+
+$winner_norm = ($raw, $src_a, $src_b) -> (
+    IF(
+        IF($raw = "answer_a", $src_a, IF($raw = "answer_b", $src_b, $raw)) = "tie",
+        "draw",
+        IF($raw = "answer_a", $src_a, IF($raw = "answer_b", $src_b, $raw))
+    )
+);
+
+$answers_list_norm = ($node) -> {
+    RETURN IF(
+        $node IS NULL,
+        AsList(),
+        ListMap(
+            Yson::ConvertToList($node),
+            ($ans) -> {
+                RETURN <|
+                    "label": $str($ans.label),
+                    "source": $str($ans.source),
+                    "answer_text": $str($ans.answer)
+                |>;
+            }
+        )
+    );
+};
+
+-- Маркера ясности больше не существует, поэтому clarity из чекбоксов не забираем:
+-- ключ отбрасывается на входе, дальше по запросу его просто нет.
+$is_clarity_key = ($key) -> (
+    COALESCE(String::Contains(String::AsciiToLower($key), "clarity"), False)
+);
+
+$checkbox_kv_list = ($node) -> {
+    RETURN IF(
+        $node IS NULL,
+        AsList(),
+        ListSort(
+            ListFilter(
+                ListMap(
+                    DictItems(Yson::ConvertToDict($node)),
+                    ($kv) -> {
+                        RETURN <|"key": CAST($kv.0 AS String), "value": ($bool($kv.1))|>;
+                    }
+                ),
+                ($x) -> { RETURN NOT $is_clarity_key($x.key); }
+            ),
+            ($x) -> { RETURN $x.key; }
+        )
+    );
+};
+
+$annotation_range_struct_list = ($node) -> {
+    RETURN IF(
+        $node IS NULL,
+        AsList(),
+        ListMap(
+            Yson::ConvertToList($node),
+            ($x) -> {
+                RETURN <|
+                    "content": $str($x.content),
+                    "end": $i64($x.end),
+                    "id": $str($x.id),
+                    "markdown_end": $i64($x.markdown_end),
+                    "markdown_start": $i64($x.markdown_start),
+                    "side": $str($x.side),
+                    "start": $i64($x.start)
+                |>;
+            }
+        )
+    );
+};
+
+$annotations_struct_list = ($node) -> {
+    RETURN IF(
+        $node IS NULL,
+        AsList(),
+        ListMap(
+            Yson::ConvertToList($node),
+            ($x) -> {
+                RETURN <|
+                    "background_color": $str($x.background_color),
+                    "id": $str($x.id),
+                    "ranges": $annotation_range_struct_list($x.ranges),
+                    "review": <|
+                        "comment": $str($x.review.comment)
+                    |>,
+                    "side": $str($x.side),
+                    "type": $str($x.type),
+                    "worker_id": $str($x.worker_id)
+                |>;
+            }
+        )
+    );
+};
+
+$src_for_answers = (
+    SELECT
+        taskId AS task_id,
+        $answers_list_norm(inputValues.answers) AS answers_list
+    FROM $input1
+    WHERE status = "ACCEPTED"
+      AND outputValues IS NOT NULL
+);
+
+$ans_sources = (
+    SELECT
+        task_id,
+        MAX(IF(ans.label = "A", ans.source, "")) AS source_A,
+        MAX(IF(ans.label = "B", ans.source, "")) AS source_B,
+        MAX(IF(ans.label = "A", ans.answer_text, "")) AS answer_A,
+        MAX(IF(ans.label = "B", ans.answer_text, "")) AS answer_B
+    FROM $src_for_answers
+    FLATTEN LIST BY answers_list AS ans
+    GROUP BY task_id
+);
+
+$project_id_const = (
+    SELECT
+        SOME(projectId) AS project_id
+    FROM $input2
+);
+
+$base = (
+    SELECT
+        t.taskId AS task_id,
+        t.assignmentId AS assignment_id,
+        t.workerId AS worker_id,
+        t.poolId AS pool_id,
+
+        IF(
+            t.acceptTs IS NOT NULL,
+            $fmt_dt(
+                DateTime::FromMilliseconds(
+                    CAST(Unwrap(t.acceptTs) AS Uint64)
+                )
+            ),
+            NULL
+        ) AS editors_markup_dt,
+
+        s.source_A AS source_A,
+        s.source_B AS source_B,
+        s.answer_A AS answer_A,
+        s.answer_B AS answer_B,
+
+        $bool(t.outputValues.skip) AS skip_flag,
+        $bool(t.outputValues.proactivity_affects_verdict) AS diff_pa_flag,
+
+        $str(t.outputValues.winner) AS winner_main_raw,
+        COALESCE(
+            IF($str(t.outputValues.winner_diff_pa) != "", $str(t.outputValues.winner_diff_pa), NULL),
+            IF($str(t.outputValues.diff_pa_winner) != "", $str(t.outputValues.diff_pa_winner), NULL),
+            IF($str(t.outputValues.winner_proactivity) != "", $str(t.outputValues.winner_proactivity), NULL),
+            IF($str(t.outputValues.winner_with_pa) != "", $str(t.outputValues.winner_with_pa), NULL),
+            ""
+        ) AS winner_diff_pa_raw,
+
+        $bool(t.outputValues.checkbox_answers.answer_a.direct_speech) AS direct_speech_A,
+        $bool(t.outputValues.checkbox_answers.answer_b.direct_speech) AS direct_speech_B,
+
+        $checkbox_kv_list(t.outputValues.checkbox_answers.answer_a.checkboxes) AS checkboxes_A_kv,
+        $checkbox_kv_list(t.outputValues.checkbox_answers.answer_b.checkboxes) AS checkboxes_B_kv,
+
+        $annotations_struct_list(t.outputValues.annotations) AS annotations_list,
+
+        $str(t.outputValues.general_comment) AS general_comment_raw,
+        $str(t.outputValues.checkbox_answers.answer_a.comment) AS comment_A_raw,
+        $str(t.outputValues.checkbox_answers.answer_b.comment) AS comment_B_raw,
+
+        t.inputValues.metadata AS meta,
+        t.inputValues.checkboxes AS checkboxes,
+        COALESCE(t.inputValues.dialog, t.inputValues.dialog_altformat) AS dialog,
+        t.inputValues.markers AS markers
+    FROM $input1 AS t
+    INNER JOIN $ans_sources AS s
+        ON t.taskId = s.task_id
+    WHERE t.status = "ACCEPTED"
+      AND t.outputValues IS NOT NULL
+      AND $str(COALESCE(t.inputValues.metadata.instruct_id, t.inputValues.instruct_id)) != ""
+);
+
+$norm = (
+    SELECT
+        b.task_id AS task_id,
+        b.assignment_id AS assignment_id,
+        b.worker_id AS worker_id,
+        b.pool_id AS pool_id,
+        b.editors_markup_dt AS editors_markup_dt,
+
+        b.source_A AS source_A,
+        b.source_B AS source_B,
+        b.answer_A AS answer_A,
+        b.answer_B AS answer_B,
+
+        b.skip_flag AS skip_flag,
+        b.diff_pa_flag AS diff_pa_flag,
+        b.direct_speech_A AS direct_speech_A,
+        b.direct_speech_B AS direct_speech_B,
+
+        b.checkboxes_A_kv AS checkboxes_A_kv,
+        b.checkboxes_B_kv AS checkboxes_B_kv,
+
+        b.annotations_list AS annotations_list,
+
+        $winner_norm(b.winner_main_raw, b.source_A, b.source_B) AS source_winner,
+        IF(
+            b.diff_pa_flag,
+            $winner_norm(b.winner_diff_pa_raw, b.source_A, b.source_B),
+            ""
+        ) AS diff_pa_winner,
+
+        b.general_comment_raw AS general_comment_raw,
+        b.comment_A_raw AS comments_A_raw,
+        b.comment_B_raw AS comments_B_raw,
+
+        b.meta AS meta,
+        b.checkboxes AS checkboxes,
+        b.dialog AS dialog,
+        b.markers AS markers
+    FROM $base AS b
+);
+
+$main_agg = (
+    SELECT
+        task_id,
+
+        SOME(source_A) AS source_A,
+        SOME(source_B) AS source_B,
+
+        COUNT(*) AS task_count,
+        AGGREGATE_LIST(task_id) AS task_ids,
+        AGGREGATE_LIST(assignment_id) AS assignment_ids,
+        AGGREGATE_LIST(worker_id) AS worker_ids,
+        AGGREGATE_LIST(editors_markup_dt) AS editors_markup_dts,
+        SOME(pool_id) AS pool_id,
+
+        MIN(answer_A) AS answer_A,
+        MIN(answer_B) AS answer_B,
+
+        AGGREGATE_LIST(skip_flag) AS skip,
+        AGGREGATE_LIST(diff_pa_flag) AS diff_pa,
+
+        AGGREGATE_LIST(direct_speech_A) AS direct_speech_A,
+        AGGREGATE_LIST(direct_speech_B) AS direct_speech_B,
+
+        AGGREGATE_LIST(source_winner) AS source_winner,
+        ListFilter(
+            AGGREGATE_LIST(diff_pa_winner),
+            ($x) -> { RETURN $x != ""; }
+        ) AS diff_pa_winner,
+
+        AGGREGATE_LIST(general_comment_raw) AS general_comments,
+        AGGREGATE_LIST(comments_A_raw) AS comments_A,
+        AGGREGATE_LIST(comments_B_raw) AS comments_B,
+
+        SOME(meta) AS meta,
+        SOME(checkboxes) AS checkboxes,
+        SOME(dialog) AS dialog,
+        SOME(markers) AS markers
+    FROM $norm
+    GROUP BY task_id
+);
+
+$cbA_flat = (
+    SELECT
+        n.task_id AS task_id,
+        cb.key AS cb_key,
+        cb.value AS cb_value
+    FROM $norm AS n
+    FLATTEN LIST BY n.checkboxes_A_kv AS cb
+);
+
+$cbA_by_key = (
+    SELECT
+        task_id,
+        cb_key AS key,
+        AGGREGATE_LIST(cb_value) AS values
+    FROM $cbA_flat
+    GROUP BY task_id, cb_key
+);
+
+$cbA_packed = (
+    SELECT
+        task_id,
+        Yson::From(ToDict(AGGREGATE_LIST(AsTuple(key, values)))) AS checkboxes_A
+    FROM $cbA_by_key
+    GROUP BY task_id
+);
+
+$cbB_flat = (
+    SELECT
+        n.task_id AS task_id,
+        cb.key AS cb_key,
+        cb.value AS cb_value
+    FROM $norm AS n
+    FLATTEN LIST BY n.checkboxes_B_kv AS cb
+);
+
+$cbB_by_key = (
+    SELECT
+        task_id,
+        cb_key AS key,
+        AGGREGATE_LIST(cb_value) AS values
+    FROM $cbB_flat
+    GROUP BY task_id, cb_key
+);
+
+$cbB_packed = (
+    SELECT
+        task_id,
+        Yson::From(ToDict(AGGREGATE_LIST(AsTuple(key, values)))) AS checkboxes_B
+    FROM $cbB_by_key
+    GROUP BY task_id
+);
+
+$annotations_by_worker = (
+    SELECT
+        task_id,
+        assignment_id,
+        annotations_list AS worker_annotations
+    FROM $norm
+);
+
+$annotations_packed = (
+    SELECT
+        task_id,
+        Yson::From(
+            ListMap(
+                ListSort(
+                    AGGREGATE_LIST(
+                        <|
+                            "assignment_id": assignment_id,
+                            "worker_annotations": worker_annotations
+                        |>
+                    ),
+                    ($x) -> { RETURN $x.assignment_id; }
+                ),
+                ($x) -> {
+                    RETURN $x.worker_annotations;
+                }
+            )
+        ) AS annotations
+    FROM $annotations_by_worker
+    GROUP BY task_id
+);
+
+INSERT INTO $output1
+WITH TRUNCATE
+SELECT
+    p.project_id AS project_id,
+    m.source_A AS source_A,
+    m.source_B AS source_B,
+    m.task_count AS task_count,
+    m.task_ids AS task_ids,
+    m.assignment_ids AS assignment_ids,
+    m.worker_ids AS worker_ids,
+    m.editors_markup_dts AS editors_markup_dts,
+    m.pool_id AS pool_id,
+    m.answer_A AS answer_A,
+    m.answer_B AS answer_B,
+    m.skip AS skip,
+    m.diff_pa AS diff_pa,
+    m.direct_speech_A AS direct_speech_A,
+    m.direct_speech_B AS direct_speech_B,
+    m.source_winner AS source_winner,
+    m.diff_pa_winner AS diff_pa_winner,
+    IF(cA.checkboxes_A IS NULL, Yson::From(ToDict(AsList())), cA.checkboxes_A) AS checkboxes_A,
+    IF(cB.checkboxes_B IS NULL, Yson::From(ToDict(AsList())), cB.checkboxes_B) AS checkboxes_B,
+    m.general_comments AS general_comments,
+    m.comments_A AS comments_A,
+    m.comments_B AS comments_B,
+    IF(a.annotations IS NULL, Yson::From(AsList()), a.annotations) AS annotations,
+    IF(m.meta IS NULL, Yson::From(ToDict(AsList())), m.meta) AS metadata,
+    m.checkboxes AS checkboxes,
+    m.dialog AS dialog,
+    m.markers AS markers
+FROM $main_agg AS m
+CROSS JOIN $project_id_const AS p
+LEFT JOIN $cbA_packed AS cA
+    ON m.task_id = cA.task_id
+LEFT JOIN $cbB_packed AS cB
+    ON m.task_id = cB.task_id
+LEFT JOIN $annotations_packed AS a
+    ON m.task_id = a.task_id
+;

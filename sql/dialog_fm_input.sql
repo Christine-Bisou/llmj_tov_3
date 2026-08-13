@@ -14,7 +14,8 @@ $region_id = 213;
 -- dialog приходит как Optional<Yson> (InferSchema не типизирует вложенный
 -- список), поэтому разбираем его Yson-функциями, а не list-функциями.
 $messages_of = ($dialog) -> (Yson::ConvertToList(Yson::Parse($dialog)));
-$dialog_text = ($dialog) -> (Yson::SerializeText(Yson::Parse($dialog)));
+-- SerializeText отдаёт тип Yson, а он не comparable — для ORDER BY нужен String.
+$dialog_text = ($dialog) -> (CAST(Yson::SerializeText(Yson::Parse($dialog)) AS String));
 $last_role_of = ($dialog) -> (
     Yson::LookupString(Unwrap(ListLast(Unwrap($messages_of($dialog)))), "role")
 );

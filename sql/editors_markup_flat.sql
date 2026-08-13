@@ -60,7 +60,7 @@ $rows = (
         p.checkboxes_A AS cbA_yson,
         p.checkboxes_B AS cbB_yson
     FROM $prep AS p
-    FLATTEN BY (idxs)
+    FLATTEN LIST BY (idxs)
 );
 
 $rows_norm = (

@@ -240,7 +240,7 @@ $rows = (
         p.checkboxes_A AS cbA_yson,
         p.checkboxes_B AS cbB_yson
     FROM $prep AS p
-    FLATTEN BY (idxs)
+    FLATTEN LIST BY (idxs)
 );
 
 $rows_norm = (
@@ -279,7 +279,7 @@ $cbA_items = (
         WHERE rn.cbA_yson IS NOT NULL
           AND NOT Yson::IsList(rn.cbA_yson)
     ) AS x
-    FLATTEN BY (items)
+    FLATTEN LIST BY (items)
     WHERE NOT $is_clarity_key(CAST(x.items.0 AS String))
 );
 
@@ -358,7 +358,7 @@ $cbB_items = (
         WHERE rn.cbB_yson IS NOT NULL
           AND NOT Yson::IsList(rn.cbB_yson)
     ) AS x
-    FLATTEN BY (items)
+    FLATTEN LIST BY (items)
     WHERE NOT $is_clarity_key(CAST(x.items.0 AS String))
 );
 
@@ -439,7 +439,7 @@ $pwA_dict_items = (
         WHERE p.pointwise_A IS NOT NULL
           AND Yson::IsDict(p.pointwise_A)
     ) AS x
-    FLATTEN BY (items)
+    FLATTEN LIST BY (items)
 );
 
 $pwA_flat_vals = (
@@ -455,7 +455,7 @@ $pwA_flat_vals = (
         FROM $pwA_dict_items AS d
         WHERE Yson::IsList(d.kv.1)
     ) AS x
-    FLATTEN BY (vals)
+    FLATTEN LIST BY (vals)
 );
 
 $pwA_agg = (
@@ -492,7 +492,7 @@ $pwB_dict_items = (
         WHERE p.pointwise_B IS NOT NULL
           AND Yson::IsDict(p.pointwise_B)
     ) AS x
-    FLATTEN BY (items)
+    FLATTEN LIST BY (items)
 );
 
 $pwB_flat_vals = (
@@ -508,7 +508,7 @@ $pwB_flat_vals = (
         FROM $pwB_dict_items AS d
         WHERE Yson::IsList(d.kv.1)
     ) AS x
-    FLATTEN BY (vals)
+    FLATTEN LIST BY (vals)
 );
 
 $pwB_agg = (
@@ -788,7 +788,7 @@ $workers_flat = (
             AsTuple("winner", Just(Yson::From(CAST(COALESCE(p.source_winner[p.idxs], "") AS String))))
         )))) AS raw_output_item
     FROM $prep AS p
-    FLATTEN BY (idxs)
+    FLATTEN LIST BY (idxs)
     LEFT JOIN $judge_parsed AS j
         ON CAST(p.assignment_ids[p.idxs] AS String) = j.assignment_id
 );

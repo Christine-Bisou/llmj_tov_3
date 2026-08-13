@@ -162,6 +162,8 @@ $prep = (
         answer_B,
         source_A,
         source_B,
+        real_source_1,
+        rownum,
         assignment_ids,
         metadata,
         markers,
@@ -729,6 +731,8 @@ $metadata_rows = (
         SOME(answer_B) AS answer_B,
         SOME(source_A) AS source_A,
         SOME(source_B) AS source_B,
+        SOME(real_source_1) AS real_source_1,
+        SOME(rownum) AS rownum,
         SOME(assignment_ids) AS assignment_ids,
         SOME(metadata) AS metadata,
         SOME(markers) AS markers,
@@ -822,6 +826,7 @@ $result_markup = (
             AsTuple("answer_A", Just(Yson::From(m.answer_A))),
             AsTuple("answer_B", Just(Yson::From(m.answer_B))),
             AsTuple("task_id", Just(Yson::From($str_string(m.task_id)))),
+            AsTuple("rownum", Just(Yson::From(m.rownum))),
             AsTuple("pool_id", Just(Yson::From(m.pool_id))),
             AsTuple("project_id", Just(Yson::From(m.project_id))),
             -- Обвязка задания собрана первым этапом, здесь идёт как есть.
@@ -890,6 +895,7 @@ $result_markup = (
             ),
             AsTuple("source_A", Just(Yson::From(m.source_A))),
             AsTuple("source_B", Just(Yson::From(m.source_B))),
+            AsTuple("real_source_1", Just(Yson::From(m.real_source_1))),
 
             -- ИЗМЕНЕНО: убрана приставка source_
             AsTuple("winner", Just(Yson::From(a.winner_internal))),
@@ -902,6 +908,7 @@ $result_markup = (
 
         Just(Yson::From(ToDict(AsList(
             AsTuple("task_id", Just(Yson::From($str_string(m.task_id)))),
+            AsTuple("rownum", Just(Yson::From(m.rownum))),
             AsTuple("pool_id", Just(Yson::From(m.pool_id))),
             AsTuple("project_id", Just(Yson::From(m.project_id))),
             AsTuple("markup_metadata", COALESCE(m.markup_metadata, $empty_dict)),
@@ -910,6 +917,7 @@ $result_markup = (
             AsTuple("answer_B", Just(Yson::From(m.answer_B))),
             AsTuple("source_A", Just(Yson::From(m.source_A))),
             AsTuple("source_B", Just(Yson::From(m.source_B))),
+            AsTuple("real_source_1", Just(Yson::From(m.real_source_1))),
 
             AsTuple("checkboxes", COALESCE(m.checkboxes, $empty_dict)),
             AsTuple("markers", COALESCE(m.markers, $empty_list)),

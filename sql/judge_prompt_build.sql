@@ -197,7 +197,9 @@ $flat_workers = (
         CAST(COALESCE(b.comments_B[idx], "") AS String) AS comments_B_worker,
         CAST(COALESCE(b.general_comments[idx], "") AS String) AS general_comment_worker
     FROM $base AS b
-    FLATTEN BY (idxs AS idx)
+    -- Явно LIST BY: idxs получается из ListLength необязательной колонки, то
+    -- есть List<Uint64>?, и простой FLATTEN BY не знает, что разворачивать.
+    FLATTEN LIST BY (idxs AS idx)
 );
 
 INSERT INTO $output1 WITH TRUNCATE

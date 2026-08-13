@@ -371,29 +371,10 @@ $main_agg = (
         SOME(source_A) AS source_A,
         SOME(source_B) AS source_B,
 
-        AGGREGATE_LIST(assignment_id) AS assignment_ids,
-        AGGREGATE_LIST(worker_id) AS worker_ids,
-        AGGREGATE_LIST(editors_markup_dt) AS editors_markup_dts,
         SOME(pool_id) AS pool_id,
 
         MIN(answer_A) AS answer_A,
         MIN(answer_B) AS answer_B,
-
-        AGGREGATE_LIST(skip_flag) AS skip,
-        AGGREGATE_LIST(diff_pa_flag) AS diff_pa,
-
-        AGGREGATE_LIST(direct_speech_A) AS direct_speech_A,
-        AGGREGATE_LIST(direct_speech_B) AS direct_speech_B,
-
-        AGGREGATE_LIST(source_winner) AS source_winner,
-        ListFilter(
-            AGGREGATE_LIST(diff_pa_winner),
-            ($x) -> { RETURN $x != ""; }
-        ) AS diff_pa_winner,
-
-        AGGREGATE_LIST(general_comment_raw) AS general_comments,
-        AGGREGATE_LIST(comments_A_raw) AS comments_A,
-        AGGREGATE_LIST(comments_B_raw) AS comments_B,
 
         SOME(meta) AS meta,
         SOME(meta_priority_type) AS meta_priority_type,
@@ -408,6 +389,57 @@ $main_agg = (
         SOME(markers) AS markers
     FROM $norm
     GROUP BY task_id
+);
+
+-- Всё поразметчиковое собирается одним списком структур и сортируется по
+-- assignment_id — тем же порядком, что чекбоксы, оценки и аннотации. Иначе
+-- позиция в одном списке и та же позиция в другом означали бы разных людей:
+-- порядок AGGREGATE_LIST ничем не задан, а AGGREGATE_LIST вдобавок выбрасывает
+-- NULL, укорачивая список (так терялась дата у неподтверждённых заданий).
+$by_marker_sorted = (
+    SELECT
+        task_id,
+        ListSort(
+            AGGREGATE_LIST(
+                <|
+                    "assignment_id": assignment_id,
+                    "worker_id": worker_id,
+                    "editors_markup_dt": editors_markup_dt,
+                    "skip_flag": skip_flag,
+                    "diff_pa_flag": diff_pa_flag,
+                    "direct_speech_A": direct_speech_A,
+                    "direct_speech_B": direct_speech_B,
+                    "source_winner": source_winner,
+                    "diff_pa_winner": diff_pa_winner,
+                    "general_comment": general_comment_raw,
+                    "comment_A": comments_A_raw,
+                    "comment_B": comments_B_raw
+                |>
+            ),
+            ($x) -> { RETURN $x.assignment_id; }
+        ) AS by_marker
+    FROM $norm
+    GROUP BY task_id
+);
+
+$by_marker_lists = (
+    SELECT
+        task_id,
+        ListMap(by_marker, ($x) -> { RETURN $x.assignment_id; }) AS assignment_ids,
+        ListMap(by_marker, ($x) -> { RETURN $x.worker_id; }) AS worker_ids,
+        ListMap(by_marker, ($x) -> { RETURN $x.editors_markup_dt; }) AS editors_markup_dts,
+        ListMap(by_marker, ($x) -> { RETURN $x.skip_flag; }) AS skip,
+        ListMap(by_marker, ($x) -> { RETURN $x.diff_pa_flag; }) AS diff_pa,
+        ListMap(by_marker, ($x) -> { RETURN $x.direct_speech_A; }) AS direct_speech_A,
+        ListMap(by_marker, ($x) -> { RETURN $x.direct_speech_B; }) AS direct_speech_B,
+        ListMap(by_marker, ($x) -> { RETURN $x.source_winner; }) AS source_winner,
+        -- Без фильтра по непустым: пустая строка держит место разметчика,
+        -- который проактивность отдельно не размечал.
+        ListMap(by_marker, ($x) -> { RETURN $x.diff_pa_winner; }) AS diff_pa_winner,
+        ListMap(by_marker, ($x) -> { RETURN $x.general_comment; }) AS general_comments,
+        ListMap(by_marker, ($x) -> { RETURN $x.comment_A; }) AS comments_A,
+        ListMap(by_marker, ($x) -> { RETURN $x.comment_B; }) AS comments_B
+    FROM $by_marker_sorted
 );
 
 $checkboxes_packed = (
@@ -485,25 +517,25 @@ SELECT
     m.meta_real_source_B AS real_source_B,
     m.task_id AS task_id,
     m.meta_rownum AS rownum,
-    m.assignment_ids AS assignment_ids,
-    m.worker_ids AS worker_ids,
-    m.editors_markup_dts AS editors_markup_dts,
+    bm.assignment_ids AS assignment_ids,
+    bm.worker_ids AS worker_ids,
+    bm.editors_markup_dts AS editors_markup_dts,
     m.pool_id AS pool_id,
     m.answer_A AS answer_A,
     m.answer_B AS answer_B,
-    m.skip AS skip,
-    m.diff_pa AS diff_pa,
-    m.direct_speech_A AS direct_speech_A,
-    m.direct_speech_B AS direct_speech_B,
-    m.source_winner AS source_winner,
-    m.diff_pa_winner AS diff_pa_winner,
+    bm.skip AS skip,
+    bm.diff_pa AS diff_pa,
+    bm.direct_speech_A AS direct_speech_A,
+    bm.direct_speech_B AS direct_speech_B,
+    bm.source_winner AS source_winner,
+    bm.diff_pa_winner AS diff_pa_winner,
     IF(cb.checkboxes_A IS NULL, Yson::From(ToDict(AsList())), cb.checkboxes_A) AS checkboxes_A,
     IF(cb.checkboxes_B IS NULL, Yson::From(ToDict(AsList())), cb.checkboxes_B) AS checkboxes_B,
     IF(pw.pointwise_A IS NULL, Yson::From(ToDict(AsList())), pw.pointwise_A) AS pointwise_A,
     IF(pw.pointwise_B IS NULL, Yson::From(ToDict(AsList())), pw.pointwise_B) AS pointwise_B,
-    m.general_comments AS general_comments,
-    m.comments_A AS comments_A,
-    m.comments_B AS comments_B,
+    bm.general_comments AS general_comments,
+    bm.comments_A AS comments_A,
+    bm.comments_B AS comments_B,
     IF(a.annotations IS NULL, Yson::From(AsList()), a.annotations) AS annotations,
     IF(m.meta IS NULL, Yson::From(ToDict(AsList())), m.meta) AS metadata,
     -- Внешний Just: строгий Yson в YT не пишется, колонка должна быть
@@ -522,6 +554,8 @@ SELECT
     m.markers AS markers
 FROM $main_agg AS m
 CROSS JOIN $project_id_const AS p
+LEFT JOIN $by_marker_lists AS bm
+    ON m.task_id = bm.task_id
 LEFT JOIN $checkboxes_packed AS cb
     ON m.task_id = cb.task_id
 LEFT JOIN $pointwise_packed AS pw

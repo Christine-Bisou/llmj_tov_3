@@ -15,11 +15,13 @@ DECLARE $output3 AS String;   -- ответы второй модели
 -- работает со списком структур (ListLength(dialog), ListLast(dialog).role,
 -- ListMap(dialog, ...)). Приводим тип здесь, чтобы ниже по пайплайну ничего
 -- не разбирало Yson руками.
--- content объявлен текстом: корзина текстовая. Если в диалоге лежит
--- мультимодальный content (список частей с картинками), Yson::ConvertTo при
--- yson.DisableStrict вернёт NULL, и такая строка отфильтруется ниже, а не
--- поедет в корзину покорёженной.
-$dialog_type = ParseType("List<Struct<content:Utf8?,role:String?>>");
+-- Поля объявлены необязательными намеренно: конвертер сравнивает роль внутри
+-- IF (`... .role == "user"`), а Optional<Bool> там не проходит типизацию.
+-- content объявлен текстом: корзина текстовая. Строки, где content не текст
+-- (мультимодальный список частей с картинками) или где нет role/content,
+-- при yson.DisableStrict дадут NULL и отфильтруются ниже, а не поедут
+-- в корзину покорёженными.
+$dialog_type = ParseType("List<Struct<content:Utf8,role:String>>");
 
 -- Обрезает хвост диалога так, чтобы последняя реплика была от пользователя:
 -- оценивается ответ модели на последний запрос, поэтому реплики ассистента
@@ -52,13 +54,11 @@ $src = (
     WHERE dialog IS NOT NULL
 );
 
--- Строки с нетекстовым content отбрасываем вместе с пустыми диалогами:
--- дальше работаем с гарантированно непустым списком.
+-- Не разобравшиеся и пустые диалоги отбрасываем: дальше работаем
+-- с гарантированно непустым списком.
 $parsed = (
     SELECT * FROM $src
-    WHERE dialog IS NOT NULL
-        AND ListLength(dialog) > 0u
-        AND ListLength(ListFilter(Unwrap(dialog), ($m) -> ($m.content IS NULL))) == 0u
+    WHERE dialog IS NOT NULL AND ListLength(dialog) > 0u
 );
 
 $trimmed = (

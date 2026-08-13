@@ -267,6 +267,10 @@ $base = (
         $str(t.inputValues.metadata.ticket) AS meta_ticket,
         $num(t.inputValues.metadata.rownum) AS meta_rownum,
 
+        -- Настоящее имя модели под ярлыком model_1: в metadata.models лежит
+        -- прогон, в real_models — сама модель, и именно её видно в отчётах.
+        $str(t.inputValues.metadata.real_models.model_1) AS meta_real_source_1,
+
         t.inputValues.checkboxes AS checkboxes,
         COALESCE(t.inputValues.dialog, t.inputValues.dialog_altformat) AS dialog,
         t.inputValues.markers AS markers
@@ -321,6 +325,7 @@ $norm = (
         b.meta_pool_type AS meta_pool_type,
         b.meta_ticket AS meta_ticket,
         b.meta_rownum AS meta_rownum,
+        b.meta_real_source_1 AS meta_real_source_1,
         b.checkboxes AS checkboxes,
         b.dialog AS dialog,
         b.markers AS markers
@@ -364,6 +369,7 @@ $main_agg = (
         SOME(meta_pool_type) AS meta_pool_type,
         SOME(meta_ticket) AS meta_ticket,
         SOME(meta_rownum) AS meta_rownum,
+        SOME(meta_real_source_1) AS meta_real_source_1,
         SOME(checkboxes) AS checkboxes,
         SOME(dialog) AS dialog,
         SOME(markers) AS markers
@@ -477,7 +483,9 @@ SELECT
     p.project_id AS project_id,
     m.source_A AS source_A,
     m.source_B AS source_B,
+    m.meta_real_source_1 AS real_source_1,
     m.task_id AS task_id,
+    m.meta_rownum AS rownum,
     m.assignment_ids AS assignment_ids,
     m.worker_ids AS worker_ids,
     m.editors_markup_dts AS editors_markup_dts,

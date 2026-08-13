@@ -162,7 +162,8 @@ $prep = (
         answer_B,
         source_A,
         source_B,
-        real_source_1,
+        real_source_A,
+        real_source_B,
         rownum,
         assignment_ids,
         metadata,
@@ -731,7 +732,8 @@ $metadata_rows = (
         SOME(answer_B) AS answer_B,
         SOME(source_A) AS source_A,
         SOME(source_B) AS source_B,
-        SOME(real_source_1) AS real_source_1,
+        SOME(real_source_A) AS real_source_A,
+        SOME(real_source_B) AS real_source_B,
         SOME(rownum) AS rownum,
         SOME(assignment_ids) AS assignment_ids,
         SOME(metadata) AS metadata,
@@ -822,6 +824,12 @@ $result_markup = (
     SELECT
         m.group_key AS group_key,
 
+        -- Отдельными колонками, а не только ключами внутри словарей: по ним
+        -- фильтруют и сортируют, доставать их разбором Yson неудобно.
+        m.rownum AS rownum,
+        m.real_source_A AS real_source_A,
+        m.real_source_B AS real_source_B,
+
         Just(Yson::From(ToDict(AsList(
             AsTuple("answer_A", Just(Yson::From(m.answer_A))),
             AsTuple("answer_B", Just(Yson::From(m.answer_B))),
@@ -895,7 +903,8 @@ $result_markup = (
             ),
             AsTuple("source_A", Just(Yson::From(m.source_A))),
             AsTuple("source_B", Just(Yson::From(m.source_B))),
-            AsTuple("real_source_1", Just(Yson::From(m.real_source_1))),
+            AsTuple("real_source_A", Just(Yson::From(m.real_source_A))),
+            AsTuple("real_source_B", Just(Yson::From(m.real_source_B))),
 
             -- ИЗМЕНЕНО: убрана приставка source_
             AsTuple("winner", Just(Yson::From(a.winner_internal))),
@@ -917,7 +926,8 @@ $result_markup = (
             AsTuple("answer_B", Just(Yson::From(m.answer_B))),
             AsTuple("source_A", Just(Yson::From(m.source_A))),
             AsTuple("source_B", Just(Yson::From(m.source_B))),
-            AsTuple("real_source_1", Just(Yson::From(m.real_source_1))),
+            AsTuple("real_source_A", Just(Yson::From(m.real_source_A))),
+            AsTuple("real_source_B", Just(Yson::From(m.real_source_B))),
 
             AsTuple("checkboxes", COALESCE(m.checkboxes, $empty_dict)),
             AsTuple("markers", COALESCE(m.markers, $empty_list)),
@@ -958,6 +968,10 @@ SELECT
     i4.input_final_messages AS input_final_messages,
     i4.input_meta AS input_meta,
     i4.input_render_data AS input_render_data,
+
+    rm.rownum AS rownum,
+    rm.real_source_A AS real_source_A,
+    rm.real_source_B AS real_source_B,
 
     rm.tov_markup AS agg_tov_markup,
     rm.raw_tov_markup AS raw_tov_markup

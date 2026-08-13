@@ -35,6 +35,8 @@ $winner_norm = ($raw, $src_a, $src_b) -> (
     )
 );
 
+$or_null = ($x) -> (IF(COALESCE($x, "") = "", "null", $x));
+
 $answers_list_norm = ($node) -> {
     RETURN IF(
         $node IS NULL,
@@ -340,10 +342,15 @@ $norm = (
         b.annotations_list AS annotations_list,
 
         $winner_norm(b.winner_main_raw, b.source_A, b.source_B) AS source_winner,
-        IF(
-            b.diff_pa_flag,
-            $winner_norm(b.winner_diff_pa_raw, b.source_A, b.source_B),
-            ""
+        -- Разметчик, не выбравший победителя с учётом проактивности, держит
+        -- своё место строкой "null" — так же, как «победителя нет» приходит из
+        -- разметки. Пустая строка на этом месте читалась бы как «поля нет».
+        $or_null(
+            IF(
+                b.diff_pa_flag,
+                $winner_norm(b.winner_diff_pa_raw, b.source_A, b.source_B),
+                ""
+            )
         ) AS diff_pa_winner,
 
         b.general_comment_raw AS general_comment_raw,

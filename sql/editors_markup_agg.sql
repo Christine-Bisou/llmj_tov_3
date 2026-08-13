@@ -58,21 +58,20 @@ $is_clarity_key = ($key) -> (
     COALESCE(String::Contains(String::AsciiToLower($key), "clarity"), False)
 );
 
-$checkbox_kv_list = ($node) -> {
-    RETURN IF(
-        $node IS NULL,
-        AsList(),
-        ListSort(
-            ListFilter(
-                ListMap(
+$checkbox_dict = ($node) -> {
+    RETURN ToDict(
+        IF(
+            $node IS NULL,
+            AsList(),
+            ListMap(
+                ListFilter(
                     DictItems(Yson::ConvertToDict($node)),
-                    ($kv) -> {
-                        RETURN <|"key": CAST($kv.0 AS String), "value": ($bool($kv.1))|>;
-                    }
+                    ($kv) -> { RETURN NOT $is_clarity_key(CAST($kv.0 AS String)); }
                 ),
-                ($x) -> { RETURN NOT $is_clarity_key($x.key); }
-            ),
-            ($x) -> { RETURN $x.key; }
+                ($kv) -> {
+                    RETURN AsTuple(CAST($kv.0 AS String), $bool($kv.1));
+                }
+            )
         )
     );
 };
@@ -100,6 +99,36 @@ $pointwise_dict = ($node, $overall) -> {
                 $overall_val IS NULL,
                 AsList(),
                 AsList(AsTuple("overall", Unwrap($overall_val)))
+            )
+        )
+    );
+};
+
+-- Списки чекбоксов строятся по всем разметчикам задания, а не только по тем,
+-- кто до чекбоксов дошёл. Разметчик, нажавший скип, чекбоксы не заполняет —
+-- раньше он просто выпадал из списка, и значения съезжали на чужие позиции.
+-- Теперь у него на своём месте false, а порядок — по assignment_id, как у
+-- аннотаций и оценок, поэтому позиции во всех ключах означают одного и того же
+-- разметчика.
+$pack_checkboxes = ($rows) -> {
+    $sorted = ListSort($rows, ($x) -> { RETURN $x.assignment_id; });
+    RETURN Yson::From(
+        ToDict(
+            ListMap(
+                ListSort(
+                    ListUniq(
+                        ListFlatMap($sorted, ($x) -> { RETURN DictKeys($x.checks); })
+                    )
+                ),
+                ($key) -> {
+                    RETURN AsTuple(
+                        $key,
+                        ListMap(
+                            $sorted,
+                            ($x) -> { RETURN COALESCE(DictLookup($x.checks, $key), False); }
+                        )
+                    );
+                }
             )
         )
     );
@@ -239,8 +268,8 @@ $base = (
         $bool(t.outputValues.checkbox_answers.answer_a.direct_speech) AS direct_speech_A,
         $bool(t.outputValues.checkbox_answers.answer_b.direct_speech) AS direct_speech_B,
 
-        $checkbox_kv_list(t.outputValues.checkbox_answers.answer_a.checkboxes) AS checkboxes_A_kv,
-        $checkbox_kv_list(t.outputValues.checkbox_answers.answer_b.checkboxes) AS checkboxes_B_kv,
+        $checkbox_dict(t.outputValues.checkbox_answers.answer_a.checkboxes) AS checkboxes_A_dict,
+        $checkbox_dict(t.outputValues.checkbox_answers.answer_b.checkboxes) AS checkboxes_B_dict,
 
         $pointwise_dict(
             t.outputValues.pointwise_ratings.answer_a,
@@ -302,8 +331,8 @@ $norm = (
         b.direct_speech_A AS direct_speech_A,
         b.direct_speech_B AS direct_speech_B,
 
-        b.checkboxes_A_kv AS checkboxes_A_kv,
-        b.checkboxes_B_kv AS checkboxes_B_kv,
+        b.checkboxes_A_dict AS checkboxes_A_dict,
+        b.checkboxes_B_dict AS checkboxes_B_dict,
 
         b.pointwise_A_dict AS pointwise_A_dict,
         b.pointwise_B_dict AS pointwise_B_dict,
@@ -381,55 +410,20 @@ $main_agg = (
     GROUP BY task_id
 );
 
-$cbA_flat = (
-    SELECT
-        n.task_id AS task_id,
-        cb.key AS cb_key,
-        cb.value AS cb_value
-    FROM $norm AS n
-    FLATTEN LIST BY n.checkboxes_A_kv AS cb
-);
-
-$cbA_by_key = (
+$checkboxes_packed = (
     SELECT
         task_id,
-        cb_key AS key,
-        AGGREGATE_LIST(cb_value) AS values
-    FROM $cbA_flat
-    GROUP BY task_id, cb_key
-);
-
-$cbA_packed = (
-    SELECT
-        task_id,
-        Yson::From(ToDict(AGGREGATE_LIST(AsTuple(key, values)))) AS checkboxes_A
-    FROM $cbA_by_key
-    GROUP BY task_id
-);
-
-$cbB_flat = (
-    SELECT
-        n.task_id AS task_id,
-        cb.key AS cb_key,
-        cb.value AS cb_value
-    FROM $norm AS n
-    FLATTEN LIST BY n.checkboxes_B_kv AS cb
-);
-
-$cbB_by_key = (
-    SELECT
-        task_id,
-        cb_key AS key,
-        AGGREGATE_LIST(cb_value) AS values
-    FROM $cbB_flat
-    GROUP BY task_id, cb_key
-);
-
-$cbB_packed = (
-    SELECT
-        task_id,
-        Yson::From(ToDict(AGGREGATE_LIST(AsTuple(key, values)))) AS checkboxes_B
-    FROM $cbB_by_key
+        $pack_checkboxes(
+            AGGREGATE_LIST(
+                <|"assignment_id": assignment_id, "checks": checkboxes_A_dict|>
+            )
+        ) AS checkboxes_A,
+        $pack_checkboxes(
+            AGGREGATE_LIST(
+                <|"assignment_id": assignment_id, "checks": checkboxes_B_dict|>
+            )
+        ) AS checkboxes_B
+    FROM $norm
     GROUP BY task_id
 );
 
@@ -503,8 +497,8 @@ SELECT
     m.direct_speech_B AS direct_speech_B,
     m.source_winner AS source_winner,
     m.diff_pa_winner AS diff_pa_winner,
-    IF(cA.checkboxes_A IS NULL, Yson::From(ToDict(AsList())), cA.checkboxes_A) AS checkboxes_A,
-    IF(cB.checkboxes_B IS NULL, Yson::From(ToDict(AsList())), cB.checkboxes_B) AS checkboxes_B,
+    IF(cb.checkboxes_A IS NULL, Yson::From(ToDict(AsList())), cb.checkboxes_A) AS checkboxes_A,
+    IF(cb.checkboxes_B IS NULL, Yson::From(ToDict(AsList())), cb.checkboxes_B) AS checkboxes_B,
     IF(pw.pointwise_A IS NULL, Yson::From(ToDict(AsList())), pw.pointwise_A) AS pointwise_A,
     IF(pw.pointwise_B IS NULL, Yson::From(ToDict(AsList())), pw.pointwise_B) AS pointwise_B,
     m.general_comments AS general_comments,
@@ -514,26 +508,22 @@ SELECT
     IF(m.meta IS NULL, Yson::From(ToDict(AsList())), m.meta) AS metadata,
     -- Внешний Just: строгий Yson в YT не пишется, колонка должна быть
     -- Optional<Yson>. Остальные Yson-колонки оптиональны сами — они приходят
-    -- из LEFT JOIN. Значения обёрнуты в Yson поштучно, чтобы rownum остался
-    -- числом: в словаре из одних строк по нему нельзя было бы сортировать.
+    -- из LEFT JOIN. rownum здесь не дублируется: он идёт своей колонкой.
     Just(Yson::From(ToDict(AsList(
-        AsTuple("priority_type", Just(Yson::From(m.meta_priority_type))),
-        AsTuple("basket_table", Just(Yson::From(m.meta_basket_table))),
-        AsTuple("pool_type", Just(Yson::From(m.meta_pool_type))),
-        AsTuple("ticket", Just(Yson::From(m.meta_ticket))),
-        AsTuple("rownum", Just(Yson::From(m.meta_rownum))),
-        AsTuple("pool_id", Just(Yson::From(COALESCE(CAST(m.pool_id AS String), "")))),
-        AsTuple("project_id", Just(Yson::From(COALESCE(CAST(p.project_id AS String), ""))))
+        AsTuple("priority_type", m.meta_priority_type),
+        AsTuple("basket_table", m.meta_basket_table),
+        AsTuple("pool_type", m.meta_pool_type),
+        AsTuple("ticket", m.meta_ticket),
+        AsTuple("pool_id", COALESCE(CAST(m.pool_id AS String), "")),
+        AsTuple("project_id", COALESCE(CAST(p.project_id AS String), ""))
     )))) AS markup_metadata,
     m.checkboxes AS checkboxes,
     m.dialog AS dialog,
     m.markers AS markers
 FROM $main_agg AS m
 CROSS JOIN $project_id_const AS p
-LEFT JOIN $cbA_packed AS cA
-    ON m.task_id = cA.task_id
-LEFT JOIN $cbB_packed AS cB
-    ON m.task_id = cB.task_id
+LEFT JOIN $checkboxes_packed AS cb
+    ON m.task_id = cb.task_id
 LEFT JOIN $pointwise_packed AS pw
     ON m.task_id = pw.task_id
 LEFT JOIN $annotations_packed AS a

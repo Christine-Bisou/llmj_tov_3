@@ -11,62 +11,56 @@ DECLARE $output1 AS String;   -- диалоги
 DECLARE $output2 AS String;   -- ответы первой модели
 DECLARE $output3 AS String;   -- ответы второй модели
 
-$script = @@#py
-import json
-from yql.typing import *
-
-
-def trim_dialog_to_user(dialog_json: Optional[Utf8]) -> Optional[Utf8]:
-    """Обрезает хвост диалога так, чтобы последняя реплика была от пользователя.
-
-    Оценивается ответ модели на последний запрос пользователя, поэтому реплики
-    ассистента в конце — это уже готовый ответ, который джадж видеть не должен.
-    Возвращает None, если реплик пользователя в диалоге нет вообще: такая строка
-    для разметки бесполезна и отфильтровывается целиком."""
-    try:
-        dialog = json.loads(dialog_json) if dialog_json else []
-    except Exception:
-        return None
-    if not isinstance(dialog, list):
-        return None
-
-    while dialog:
-        last = dialog[-1]
-        role = last.get('role') if isinstance(last, dict) else None
-        if str(role or '') == 'user':
-            break
-        dialog.pop()
-
-    if not dialog:
-        return None
-    return json.dumps(dialog, ensure_ascii=False)
-@@;
-
-$trim_dialog_to_user = Python3::trim_dialog_to_user($script);
+-- Обрезает хвост диалога так, чтобы последняя реплика была от пользователя:
+-- оценивается ответ модели на последний запрос, поэтому реплики ассистента
+-- в конце — это уже готовый ответ, которого джадж видеть не должен.
+-- Список берётся префиксом, тип колонки не меняется — ниже по пайплайну
+-- dialog остаётся нативным списком структур, а не Yson.
+-- Если реплик пользователя в диалоге нет вообще, возвращается NULL.
+$trim_dialog_to_user = ($dialog) -> {
+    $user_indexes = ListMap(
+        ListFilter(ListEnumerate($dialog), ($item) -> ($item.1.role == "user")),
+        ($item) -> ($item.0)
+    );
+    $last_user_index = ListLast($user_indexes);
+    RETURN IF(
+        $last_user_index IS NOT NULL,
+        ListTake($dialog, COALESCE($last_user_index, 0ul) + 1ul)
+    );
+};
 
 $src = (
     SELECT
         CAST(instruct_id AS String)        AS instruct_id,
-        -- диалог хранится списком структур; Yson::From + SerializeJson даёт
-        -- обычный JSON, с которым работает питоновская udf
-        $trim_dialog_to_user(
-            Yson::SerializeJson(Yson::From(dialog))
-        )                                  AS dialog_json,
+        dialog                             AS dialog,
         CAST(answer_1 AS Utf8)             AS answer_1,
         CAST(answer_2 AS Utf8)             AS answer_2,
         CAST(answer_source_1 AS String)    AS answer_source_1,
         CAST(answer_source_2 AS String)    AS answer_source_2
     FROM $input1
+    WHERE dialog IS NOT NULL AND ListLength(dialog) > 0u
 );
 
--- строки без реплик пользователя выкидываем из всех трёх выходов сразу,
--- иначе таблицы ответов разъедутся с таблицей диалогов
+$trimmed = (
+    SELECT
+        instruct_id,
+        $trim_dialog_to_user(Unwrap(dialog)) AS dialog,
+        answer_1,
+        answer_2,
+        answer_source_1,
+        answer_source_2
+    FROM $src
+);
+
+-- Строки без реплик пользователя выкидываем из всех трёх выходов сразу,
+-- иначе таблицы ответов разъедутся с таблицей диалогов.
 $src_ok = (
-    SELECT * FROM $src WHERE dialog_json IS NOT NULL
+    SELECT * FROM $trimmed
+    WHERE dialog IS NOT NULL AND ListLength(dialog) > 0u
 );
 
 INSERT INTO $output1 WITH TRUNCATE
-SELECT instruct_id, Yson::ParseJson(SOME(dialog_json)) AS dialog
+SELECT instruct_id, SOME(dialog) AS dialog
 FROM $src_ok GROUP BY instruct_id ORDER BY instruct_id;
 
 INSERT INTO $output2 WITH TRUNCATE

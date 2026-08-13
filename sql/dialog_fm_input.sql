@@ -11,15 +11,23 @@ PRAGMA yt.DefaultMaxJobFails = "1";
 
 $region_id = 213;
 
+-- dialog приходит как Optional<Yson> (InferSchema не типизирует вложенный
+-- список), поэтому разбираем его Yson-функциями, а не list-функциями.
+$messages_of = ($dialog) -> (Yson::ConvertToList(Yson::Parse($dialog)));
+$dialog_text = ($dialog) -> (Yson::SerializeText(Yson::Parse($dialog)));
+$last_role_of = ($dialog) -> (
+    Yson::LookupString(Unwrap(ListLast(Unwrap($messages_of($dialog)))), "role")
+);
+
 $convert_dialog = ($dialog, $instruct_id) -> {
-    $messages = Unwrap(ListMap($dialog, ($message) -> (Unwrap($message))));
+    $messages = Unwrap($messages_of($dialog));
     $last_message = Unwrap(ListLast($messages));
     $tags = AsList(
-        "urm_llm_emo_basket_v1",
+        "urm_llm_tov_gs_refilled_basket_v1",
         "priemka",
         "split__gen_eval_priemka",
         "platform__desktop",
-        "emo",
+        "tov",
         IF(ListLength($messages) == 1u, "query", "dialog")
     );
 
@@ -33,12 +41,12 @@ $convert_dialog = ($dialog, $instruct_id) -> {
         ],
         ListMap(
             ListTake($messages, ListLength($messages) - 1u),
-            ($message) -> (Yson::From($message))
+            ($message) -> (Yson::Serialize($message))
         ),
         [
             Yson::From(<|
-                role: $last_message.role,
-                content: $last_message.content,
+                role: Unwrap(Yson::LookupString($last_message, "role")),
+                content: Unwrap(Yson::LookupString($last_message, "content")),
                 extra_info: <|
                     region_id: CAST($region_id AS String),
                     region_name: Geo::RegionById($region_id).en_name,
@@ -85,25 +93,25 @@ $valid_dialogs = (
         dialog
     FROM $source
     WHERE dialog IS NOT NULL
-        AND ListLength(dialog) > 0u
+        AND ListLength($messages_of(dialog)) > 0u
 );
 
 $dialog_stats = (
     SELECT
         COUNT(*) AS row_count,
-        COALESCE(SUM(IF(Unwrap(ListLast(dialog)).role == "user", 0u, 1u)), 0u) AS bad_last_role_count
+        COALESCE(SUM(IF(($last_role_of(dialog) == "user") ?? false, 0u, 1u)), 0u) AS bad_last_role_count
     FROM $valid_dialogs
 );
 
 -- Один instruct_id — одна строка в корзине: дубли схлопываем детерминированно
--- по хешу диалога.
+-- по тексту диалога.
 $ranked_dialogs = (
     SELECT
         instruct_id,
         dialog,
         ROW_NUMBER() OVER (
             PARTITION BY instruct_id
-            ORDER BY Digest::Md5Hex(Yson::SerializeText(Yson::From(dialog)))
+            ORDER BY $dialog_text(dialog)
         ) AS duplicate_rank
     FROM $valid_dialogs
 );

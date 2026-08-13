@@ -11,11 +11,19 @@ DECLARE $output1 AS String;   -- диалоги
 DECLARE $output2 AS String;   -- ответы первой модели
 DECLARE $output3 AS String;   -- ответы второй модели
 
+-- В исходной таблице dialog лежит как Yson, а канонический конвертер корзины
+-- работает со списком структур (ListLength(dialog), ListLast(dialog).role,
+-- ListMap(dialog, ...)). Приводим тип здесь, чтобы ниже по пайплайну ничего
+-- не разбирало Yson руками.
+-- content объявлен текстом: корзина текстовая. Если в диалоге лежит
+-- мультимодальный content (список частей с картинками), Yson::ConvertTo при
+-- yson.DisableStrict вернёт NULL, и такая строка отфильтруется ниже, а не
+-- поедет в корзину покорёженной.
+$dialog_type = ParseType("List<Struct<content:Utf8?,role:String?>>");
+
 -- Обрезает хвост диалога так, чтобы последняя реплика была от пользователя:
 -- оценивается ответ модели на последний запрос, поэтому реплики ассистента
 -- в конце — это уже готовый ответ, которого джадж видеть не должен.
--- Список берётся префиксом, тип колонки не меняется — ниже по пайплайну
--- dialog остаётся нативным списком структур, а не Yson.
 -- Если реплик пользователя в диалоге нет вообще, возвращается NULL.
 $trim_dialog_to_user = ($dialog) -> {
     -- роли достаём отдельным списком: обращение вида $item.1.role парсер
@@ -34,14 +42,23 @@ $trim_dialog_to_user = ($dialog) -> {
 
 $src = (
     SELECT
-        CAST(instruct_id AS String)        AS instruct_id,
-        dialog                             AS dialog,
-        CAST(answer_1 AS Utf8)             AS answer_1,
-        CAST(answer_2 AS Utf8)             AS answer_2,
-        CAST(answer_source_1 AS String)    AS answer_source_1,
-        CAST(answer_source_2 AS String)    AS answer_source_2
+        CAST(instruct_id AS String)                AS instruct_id,
+        Yson::ConvertTo(dialog, $dialog_type)      AS dialog,
+        CAST(answer_1 AS Utf8)                     AS answer_1,
+        CAST(answer_2 AS Utf8)                     AS answer_2,
+        CAST(answer_source_1 AS String)            AS answer_source_1,
+        CAST(answer_source_2 AS String)            AS answer_source_2
     FROM $input1
-    WHERE dialog IS NOT NULL AND ListLength(dialog) > 0u
+    WHERE dialog IS NOT NULL
+);
+
+-- Строки с нетекстовым content отбрасываем вместе с пустыми диалогами:
+-- дальше работаем с гарантированно непустым списком.
+$parsed = (
+    SELECT * FROM $src
+    WHERE dialog IS NOT NULL
+        AND ListLength(dialog) > 0u
+        AND ListLength(ListFilter(Unwrap(dialog), ($m) -> ($m.content IS NULL))) == 0u
 );
 
 $trimmed = (
@@ -52,7 +69,7 @@ $trimmed = (
         answer_2,
         answer_source_1,
         answer_source_2
-    FROM $src
+    FROM $parsed
 );
 
 -- Строки без реплик пользователя выкидываем из всех трёх выходов сразу,

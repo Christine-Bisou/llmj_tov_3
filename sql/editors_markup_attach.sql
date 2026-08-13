@@ -14,6 +14,11 @@ PRAGMA yt.InferSchema = '2';
 $joined = (
     SELECT
         orig.*,
+        -- Разметочные колонки merge берём наравне со словарями: доставать их
+        -- разбором Yson ради фильтра или сортировки незачем.
+        tov.rownum AS rownum,
+        tov.real_source_A AS real_source_A,
+        tov.real_source_B AS real_source_B,
         tov.agg_tov_markup AS agg_tov_markup,
         tov.raw_tov_markup AS raw_tov_markup
     FROM $input2 AS tov
@@ -37,6 +42,9 @@ SELECT
     j.input_final_messages AS input_final_messages,
     j.input_meta AS input_meta,
     j.input_render_data AS input_render_data,
+    j.rownum AS rownum,
+    j.real_source_A AS real_source_A,
+    j.real_source_B AS real_source_B,
     j.agg_tov_markup AS agg_tov_markup,
     j.raw_tov_markup AS raw_tov_markup
 FROM $joined AS j;

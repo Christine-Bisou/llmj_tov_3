@@ -18,8 +18,11 @@ DECLARE $output3 AS String;   -- ответы второй модели
 -- dialog остаётся нативным списком структур, а не Yson.
 -- Если реплик пользователя в диалоге нет вообще, возвращается NULL.
 $trim_dialog_to_user = ($dialog) -> {
+    -- роли достаём отдельным списком: обращение вида $item.1.role парсер
+    -- читает как число с точкой и падает
+    $roles = ListMap($dialog, ($message) -> ($message.role));
     $user_indexes = ListMap(
-        ListFilter(ListEnumerate($dialog), ($item) -> ($item.1.role == "user")),
+        ListFilter(ListEnumerate($roles), ($item) -> ($item.1 == "user")),
         ($item) -> ($item.0)
     );
     $last_user_index = ListLast($user_indexes);

@@ -68,7 +68,11 @@ $flags = (
         $re_forbidden($txt(gpt_result))  AS f_forbidden,
         -- воспроизводимый псевдослучайный ключ: повторный прогон даст ту же выборку
         Digest::CityHash($txt(gpt_result) || '#' || CAST(TableRecordIndex() AS String)) AS shuffle,
-        t.*
+        t.*,
+        -- если такие колонки уже есть во входе, свои считаем заново, чужие выкидываем
+        WITHOUT IF EXISTS
+            t.shuffle,
+            t.f_repetition, t.f_machine, t.f_heavy, t.f_dossier, t.f_forbidden
     FROM $input1 AS t
 );
 
@@ -90,8 +94,11 @@ $pool = (
         IF(f_dossier,    'да', 'нет')                                                        AS m_effekt_dosye,
         IF(f_forbidden,  'да', 'нет')                                                        AS m_zapreshchennye_dannye,
         t.*,
-        WITHOUT
-            t.f_repetition, t.f_machine, t.f_heavy, t.f_dossier, t.f_forbidden
+        WITHOUT IF EXISTS
+            t.f_repetition, t.f_machine, t.f_heavy, t.f_dossier, t.f_forbidden,
+            t.verdict_norm, t.tov_cnt, t.tov_markers, t.tov_group, t.bucket, t.tov_flag,
+            t.m_navyazchivoe_povtorenie, t.m_mashinnaya_formulirovka,
+            t.m_sensitivnaya_tyazhelovesno, t.m_effekt_dosye, t.m_zapreshchennye_dannye
     FROM $flags AS t
     WHERE $cnt(f_repetition, f_machine, f_heavy, f_dossier, f_forbidden) >= 1
       AND $verdict_col(verdict) IN ('norm', 'bad')
@@ -103,7 +110,8 @@ $sample_nb = (
     FROM (
         SELECT
             ROW_NUMBER() OVER w AS rn,
-            t.*
+            t.*,
+            WITHOUT IF EXISTS t.rn
         FROM $pool AS t
         WINDOW w AS (PARTITION BY bucket ORDER BY shuffle)
     ) AS t
@@ -115,7 +123,8 @@ $sample_nb = (
 $pool_good = (
     SELECT
         Digest::CityHash('good#' || CAST(TableRecordIndex() AS String)) AS shuffle,
-        t.*
+        t.*,
+        WITHOUT IF EXISTS t.shuffle
     FROM $input2 AS t
     WHERE $verdict_col(verdict) == 'good'
 );
@@ -133,11 +142,17 @@ $sample_good = (
         'нет'          AS m_sensitivnaya_tyazhelovesno,
         'нет'          AS m_effekt_dosye,
         'нет'          AS m_zapreshchennye_dannye,
-        t.*
+        t.*,
+        -- в изначальной таблице такие колонки уже могут быть — свои ставим сами
+        WITHOUT IF EXISTS
+            t.verdict_norm, t.tov_cnt, t.tov_markers, t.tov_group, t.bucket, t.tov_flag,
+            t.m_navyazchivoe_povtorenie, t.m_mashinnaya_formulirovka,
+            t.m_sensitivnaya_tyazhelovesno, t.m_effekt_dosye, t.m_zapreshchennye_dannye
     FROM (
         SELECT
             ROW_NUMBER() OVER w AS rn,
-            t.*
+            t.*,
+            WITHOUT IF EXISTS t.rn
         FROM $pool_good AS t
         WINDOW w AS (ORDER BY shuffle)
     ) AS t

@@ -127,16 +127,26 @@ $last_dialog_query = ($dialog) -> (
 -- Исходное задание из второго выхода agg. instruct_id там лежит внутри
 -- input_meta, отдельной колонки нет. Сворачиваем по instruct_id: если на один
 -- инстракт придёт несколько строк, LEFT JOIN размножил бы разметку.
-$task_input = (
+$task_input_prep = (
     SELECT
         $str(input_meta.instruct_id) AS instruct_id,
+        answers,
+        input_final_messages,
+        input_meta,
+        input_render_data
+    FROM $input3
+    WHERE $str(input_meta.instruct_id) != ""
+);
+
+$task_input = (
+    SELECT
+        instruct_id,
         SOME(answers) AS answers,
         SOME(input_final_messages) AS input_final_messages,
         SOME(input_meta) AS input_meta,
         SOME(input_render_data) AS input_render_data
-    FROM $input3
-    WHERE $str(input_meta.instruct_id) != ""
-    GROUP BY $str(input_meta.instruct_id)
+    FROM $task_input_prep
+    GROUP BY instruct_id
 );
 
 $prep = (

@@ -173,8 +173,7 @@ $input2_prep = (
         $yflat(input_meta) AS input_meta,
         $yflat(input_render_data) AS input_render_data,
         $yflat(agg_tov_markup) AS agg_tov_markup,
-        $yflat(raw_tov_markup) AS raw_tov_markup,
-        rownum
+        $yflat(raw_tov_markup) AS raw_tov_markup
     FROM $input2
 );
 
@@ -182,7 +181,6 @@ $agg_src = (
     SELECT
         $str(input_meta.instruct_id) AS instruct_id,
         $str(agg_tov_markup.task_id) AS task_id,
-        rownum,
 
         answers,
         input_final_messages,
@@ -227,7 +225,6 @@ $prep = (
     SELECT
         $str($yflat(t.metadata).instruct_id) AS instruct_id,
         CAST(t.task_id AS String) AS task_id,
-        t.rownum AS rownum,
         $str($yflat(t.markup_metadata).pool_id) AS pool_id,
         $str($yflat(t.markup_metadata).project_id) AS project_id,
 
@@ -270,7 +267,6 @@ $worker_rows = (
     SELECT
         p.instruct_id AS instruct_id,
         p.task_id AS task_id,
-        p.rownum AS rownum,
         p.pool_id AS pool_id,
         p.project_id AS project_id,
         p.task_count AS task_count,
@@ -400,8 +396,6 @@ SELECT
     COALESCE(w.real_source_A, "") AS real_source_A,
     COALESCE(w.real_source_B, "") AS real_source_B,
 
-    w.rownum AS rownum,
-
     a.skip_agg AS skip_agg,
     w.skip_worker AS skip_worker,
 
@@ -429,7 +423,6 @@ SELECT
 
     a.instruct_id AS instruct_id,
     a.task_id AS task_id,
-    a.rownum AS rownum,
     a.pool_id AS pool_id,
     a.project_id AS project_id,
     a.markup_metadata AS markup_metadata,

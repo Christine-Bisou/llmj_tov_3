@@ -521,6 +521,7 @@ SELECT
     m.source_A AS source_A,
     m.source_B AS source_B,
     m.meta_ticket AS ticket,
+    m.meta_basket_table AS basket_table,
     m.meta_real_source_A AS real_source_A,
     m.meta_real_source_B AS real_source_B,
     m.task_id AS task_id,

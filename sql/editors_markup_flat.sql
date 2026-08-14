@@ -292,8 +292,8 @@ $cbB_false_instr = (
 /* POINTWISE A */
 /* Первый этап отдаёт словарь критерий -> список оценок по разметчикам, где 0
    значит «критерий не оценили». Разворачиваем словарь, разворачиваем список и
-   берём среднее по критерию, выбрасывая нули: из 0, 4, 5 среднее считается по
-   4 и 5. Разбираем узлы yson по одному, а не конвертируем словарь целиком в
+   берём среднее по ненулевым: из 0, 4, 5 среднее считается по 4 и 5. Если же
+   нули везде — критерий не оценил никто, и средним остаётся 0. Разбираем узлы yson по одному, а не конвертируем словарь целиком в
    типизированный: при малейшем несовпадении типа такая конвертация молча
    отдаёт NULL на весь словарь. Читаем из $prep, а не из $rows_norm: список
    оценок уже содержит всех разметчиков, и через $rows_norm каждое значение
@@ -329,9 +329,8 @@ $pwA_key = (
     SELECT
         n.task_id AS task_id,
         n.pw_key AS pw_key,
-        AVG(n.pw_val) AS pw_avg
+        COALESCE(AVG(IF(n.pw_val != 0.0, n.pw_val, NULL)), 0.0) AS pw_avg
     FROM $pwA_flat AS n
-    WHERE n.pw_val IS NOT NULL AND n.pw_val != 0.0
     GROUP BY n.task_id, n.pw_key
 );
 
@@ -377,9 +376,8 @@ $pwB_key = (
     SELECT
         n.task_id AS task_id,
         n.pw_key AS pw_key,
-        AVG(n.pw_val) AS pw_avg
+        COALESCE(AVG(IF(n.pw_val != 0.0, n.pw_val, NULL)), 0.0) AS pw_avg
     FROM $pwB_flat AS n
-    WHERE n.pw_val IS NOT NULL AND n.pw_val != 0.0
     GROUP BY n.task_id, n.pw_key
 );
 

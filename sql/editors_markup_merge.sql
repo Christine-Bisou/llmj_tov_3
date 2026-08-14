@@ -166,6 +166,7 @@ $prep = (
         real_source_B,
         rownum,
         ticket,
+        basket_table,
         assignment_ids,
         metadata,
         markers,
@@ -424,9 +425,10 @@ $cbB_false_instr = (
 -- ==========================================================
 -- Первый этап отдаёт словарь критерий -> список оценок по разметчикам, где 0
 -- значит «критерий не оценили». Разворачиваем словарь в пары, разворачиваем
--- список оценок и берём среднее по критерию, выбрасывая нули: иначе один
--- неоценивший разметчик тянул бы средний балл вниз. overall тут отдельного
--- разбора не требует — он лежит в том же словаре обычным ключом.
+-- список оценок и берём среднее по ненулевым: иначе один неоценивший
+-- разметчик тянул бы средний балл вниз. Если критерий не оценил никто и там
+-- одни нули, средним остаётся 0 — критерий не должен исчезать из словаря.
+-- overall отдельного разбора не требует: он лежит там же обычным ключом.
 
 $pwA_dict_items = (
     SELECT
@@ -463,9 +465,8 @@ $pwA_agg = (
     SELECT
         group_key,
         pw_key,
-        AVG(pw_val) AS pw_avg
+        COALESCE(AVG(IF(pw_val != 0.0, pw_val, NULL)), 0.0) AS pw_avg
     FROM $pwA_flat_vals
-    WHERE pw_val IS NOT NULL AND pw_val != 0.0
     GROUP BY group_key, pw_key
 );
 
@@ -516,9 +517,8 @@ $pwB_agg = (
     SELECT
         group_key,
         pw_key,
-        AVG(pw_val) AS pw_avg
+        COALESCE(AVG(IF(pw_val != 0.0, pw_val, NULL)), 0.0) AS pw_avg
     FROM $pwB_flat_vals
-    WHERE pw_val IS NOT NULL AND pw_val != 0.0
     GROUP BY group_key, pw_key
 );
 
@@ -737,6 +737,7 @@ $metadata_rows = (
         SOME(real_source_B) AS real_source_B,
         SOME(rownum) AS rownum,
         SOME(ticket) AS ticket,
+        SOME(basket_table) AS basket_table,
         SOME(assignment_ids) AS assignment_ids,
         SOME(metadata) AS metadata,
         SOME(markers) AS markers,
@@ -837,6 +838,7 @@ $result_markup = (
             AsTuple("answer_B", Just(Yson::From(m.answer_B))),
             AsTuple("task_id", Just(Yson::From($str_string(m.task_id)))),
             AsTuple("ticket", Just(Yson::From(m.ticket))),
+            AsTuple("basket_table", Just(Yson::From(m.basket_table))),
             AsTuple("pool_id", Just(Yson::From(m.pool_id))),
             AsTuple("project_id", Just(Yson::From(m.project_id))),
             -- Обвязка задания собрана первым этапом, здесь идёт как есть.
@@ -920,6 +922,7 @@ $result_markup = (
         Just(Yson::From(ToDict(AsList(
             AsTuple("task_id", Just(Yson::From($str_string(m.task_id)))),
             AsTuple("ticket", Just(Yson::From(m.ticket))),
+            AsTuple("basket_table", Just(Yson::From(m.basket_table))),
             AsTuple("pool_id", Just(Yson::From(m.pool_id))),
             AsTuple("project_id", Just(Yson::From(m.project_id))),
             AsTuple("markup_metadata", COALESCE(m.markup_metadata, $empty_dict)),

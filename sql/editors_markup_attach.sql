@@ -1,7 +1,7 @@
 DECLARE $input1 AS String;  -- Изначальная таблица
 DECLARE $input2 AS String;  -- Выход merge: input-поля + agg_tov_markup / raw_tov_markup
 DECLARE $output1 AS String; -- Изначальная таблица + словари разметки
-DECLARE $output2 AS String; -- То же самое
+DECLARE $output2 AS String; -- Только два словаря разметки
 
 PRAGMA Yson.AutoConvert;
 PRAGMA yson.DisableStrict;
@@ -33,7 +33,9 @@ INSERT INTO $output1 WITH TRUNCATE
 SELECT *
 FROM $joined;
 
--- Исходная таблица как есть плюс два словаря разметки.
+-- Только разметка, без исходных колонок: две колонки и ничего больше.
 INSERT INTO $output2 WITH TRUNCATE
-SELECT *
-FROM $joined;
+SELECT
+    j.agg_tov_markup AS agg_tov_markup,
+    j.raw_tov_markup AS raw_tov_markup
+FROM $joined AS j;

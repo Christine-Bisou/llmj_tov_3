@@ -691,29 +691,22 @@ FROM (
                 END
         END AS checkboxes_2,
 
-        -- У пропущенного задания оценок нет, поэтому там NULL, а не нули:
-        -- ноль читался бы как выставленный балл.
-        CASE
-            WHEN COALESCE(a.skip, false) THEN NULL
-            WHEN pwA.task_id IS NULL THEN NULL
-            ELSE AsStruct(
-                pwA.clarity AS clarity,
-                pwA.connect AS connect,
-                pwA.liveliness AS liveliness,
-                pwA.overall AS overall
-            )
-        END AS pointwise_1,
+        -- Ноль здесь — полноценное значение: он означает, что критерий никто не
+        -- оценил. Поэтому и пропущенное задание, и отсутствующий критерий, и
+        -- пустой словарь дают 0, а не NULL.
+        AsStruct(
+            COALESCE(pwA.clarity, 0.0) AS clarity,
+            COALESCE(pwA.connect, 0.0) AS connect,
+            COALESCE(pwA.liveliness, 0.0) AS liveliness,
+            COALESCE(pwA.overall, 0.0) AS overall
+        ) AS pointwise_1,
 
-        CASE
-            WHEN COALESCE(a.skip, false) THEN NULL
-            WHEN pwB.task_id IS NULL THEN NULL
-            ELSE AsStruct(
-                pwB.clarity AS clarity,
-                pwB.connect AS connect,
-                pwB.liveliness AS liveliness,
-                pwB.overall AS overall
-            )
-        END AS pointwise_2,
+        AsStruct(
+            COALESCE(pwB.clarity, 0.0) AS clarity,
+            COALESCE(pwB.connect, 0.0) AS connect,
+            COALESCE(pwB.liveliness, 0.0) AS liveliness,
+            COALESCE(pwB.overall, 0.0) AS overall
+        ) AS pointwise_2,
 
         m.comments_A AS comments_A,
         m.comments_B AS comments_B,

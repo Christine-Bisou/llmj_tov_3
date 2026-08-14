@@ -38,6 +38,17 @@ $re_forbidden  = Re2::Grep(@@(?i)Запрещ[её]нные данные[\s\*_]{
 
 $txt = ($s) -> { RETURN CAST($s AS String) ?? ''; };
 
+-- ---------------------------------------------------------------------------
+-- instruct_id: своего id во входах нет, лепим из хэша содержимого строки.
+-- $row_key берёт строку целиком, поэтому не зависит от имён колонок, а id
+-- получается стабильным: тот же вход → тот же instruct_id при любом прогоне.
+-- Если хочется завязаться на конкретное поле (например, на диалог/запрос),
+-- замени $row_key(TableRow()) на это поле — id станет одинаковым для одного
+-- и того же инстракта в разных таблицах.
+-- ---------------------------------------------------------------------------
+$row_key = ($row) -> { RETURN Yson::SerializeJson(Yson::From($row)) ?? ''; };
+$make_id = ($s) -> { RETURN Digest::Md5Hex($txt($s)); };
+
 -- вердикт к нижнему регистру и без пробелов по краям
 $verdict_col = ($v) -> { RETURN String::AsciiToLower(String::Strip($txt($v))); };
 
@@ -66,12 +77,13 @@ $flags = (
         $re_heavy($txt(gpt_result))      AS f_heavy,
         $re_dossier($txt(gpt_result))    AS f_dossier,
         $re_forbidden($txt(gpt_result))  AS f_forbidden,
+        $make_id($row_key(TableRow()))            AS instruct_id,
         -- воспроизводимый псевдослучайный ключ: повторный прогон даст ту же выборку
-        Digest::CityHash($txt(gpt_result) || '#' || CAST(TableRecordIndex() AS String)) AS shuffle,
+        Digest::CityHash($row_key(TableRow()))   AS shuffle,
         t.*,
         -- если такие колонки уже есть во входе, свои считаем заново, чужие выкидываем
         WITHOUT IF EXISTS
-            t.shuffle,
+            t.instruct_id, t.shuffle,
             t.f_repetition, t.f_machine, t.f_heavy, t.f_dossier, t.f_forbidden
     FROM $input1 AS t
 );
@@ -122,9 +134,10 @@ $sample_nb = (
 -- Маркеры не ищем: у good их по определению нет.
 $pool_good = (
     SELECT
-        Digest::CityHash('good#' || CAST(TableRecordIndex() AS String)) AS shuffle,
+        $make_id($row_key(TableRow()))          AS instruct_id,
+        Digest::CityHash($row_key(TableRow()))  AS shuffle,
         t.*,
-        WITHOUT IF EXISTS t.shuffle
+        WITHOUT IF EXISTS t.instruct_id, t.shuffle
     FROM $input2 AS t
     WHERE $verdict_col(verdict) == 'good'
 );
@@ -171,8 +184,9 @@ $final = (
 -- ========================= ВЫХОД 1: 180 строк =========================
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
+    t.instruct_id AS instruct_id,
     t.*,
-    WITHOUT t.shuffle
+    WITHOUT t.instruct_id, t.shuffle
 FROM $final AS t
 ORDER BY verdict_norm, tov_group, rn;
 
@@ -180,10 +194,12 @@ ORDER BY verdict_norm, tov_group, rn;
 -- Если в какой-то корзине available < нужного, до 180 строк не хватит —
 -- видно сразу здесь, а не по размеру итоговой таблицы.
 $stat_src = (
-    SELECT bucket AS bucket, verdict_norm AS verdict_norm, tov_group AS tov_group, $size AS quota
+    SELECT bucket AS bucket, verdict_norm AS verdict_norm, tov_group AS tov_group,
+           $size AS quota, instruct_id AS instruct_id
     FROM $pool
     UNION ALL
-    SELECT 'good_0' AS bucket, 'good' AS verdict_norm, '0' AS tov_group, $size_good AS quota
+    SELECT 'good_0' AS bucket, 'good' AS verdict_norm, '0' AS tov_group,
+           $size_good AS quota, instruct_id AS instruct_id
     FROM $pool_good
 );
 
@@ -194,7 +210,8 @@ SELECT
     s.tov_group                  AS tov_group,
     MIN(s.quota)                 AS quota,
     COUNT(*)                     AS available,
-    MIN_OF(COUNT(*), MIN(s.quota)) AS taken
+    MIN_OF(COUNT(*), MIN(s.quota)) AS taken,
+    COUNT(DISTINCT s.instruct_id)  AS uniq_ids   -- должно совпадать с available
 FROM $stat_src AS s
 GROUP BY s.bucket, s.verdict_norm, s.tov_group
 ORDER BY bucket;
@@ -202,7 +219,8 @@ ORDER BY bucket;
 -- ========================= ВЫХОД 3: только good =========================
 INSERT INTO $output3 WITH TRUNCATE
 SELECT
+    t.instruct_id AS instruct_id,
     t.*,
-    WITHOUT t.shuffle
+    WITHOUT t.instruct_id, t.shuffle
 FROM $sample_good AS t
 ORDER BY rn;

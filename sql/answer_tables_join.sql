@@ -36,11 +36,22 @@ END DEFINE;
 
 $answers = SubqueryUnionAllFor($answer_tables, $read_answers);
 
--- Номер ответа — позиция модели в отсортированном списке answer_source.
--- Один прогон может лежать в нескольких таблицах, поэтому по таблицам не нумеруем.
-$sources = (SELECT ListSort(AGGREGATE_LIST_DISTINCT(answer_source)) FROM $answers());
+-- Номер ответа считаем внутри instruct_id: он не зависит ни от того, сколькими
+-- таблицами отдали прогон, ни от того, что лежит в answer_source.
+$numbered = (
+    SELECT
+        instruct_id,
+        answer,
+        answer_source,
+        ROW_NUMBER() OVER w - 1ul AS answer_index,
+        COUNT(*) OVER p AS answer_table_count
+    FROM $answers()
+    WINDOW
+        w AS (PARTITION BY instruct_id ORDER BY answer_source),
+        p AS (PARTITION BY instruct_id)
+);
 
--- Длинная таблица: по строке на каждую модель для каждого instruct_id.
+-- Длинная таблица: по строке на каждый найденный ответ для instruct_id.
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
     basket.input_final_messages AS input_final_messages,
@@ -48,8 +59,8 @@ SELECT
     basket.input_render_data AS input_render_data,
     answers.answer AS answer,
     answers.answer_source AS answer_source,
-    COALESCE(ListIndexOf($sources, answers.answer_source), 0ul) AS answer_index,
-    CAST(ListLength($sources) AS Uint64) AS answer_table_count
-FROM $answers() AS answers
+    answers.answer_index AS answer_index,
+    answers.answer_table_count AS answer_table_count
+FROM $numbered AS answers
 JOIN $basket AS basket
     ON answers.instruct_id == basket.instruct_id;

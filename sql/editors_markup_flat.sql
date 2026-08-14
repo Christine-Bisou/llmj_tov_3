@@ -8,9 +8,6 @@ DECLARE $output1 AS String;
 
 $str = ($x) -> (nvl(Yson::ConvertToString($x), ""));
 
--- Оценки первый этап пишет уже вещественными, но AutoConvert страхует от целых.
-$pw_opts = Yson::Options(false AS Strict, true AS AutoConvert);
-
 $prep = (
     SELECT
         COALESCE(CAST(task_id AS String), "") AS task_id,
@@ -283,114 +280,6 @@ $cbB_false_instr = (
     GROUP BY k.task_id
 );
 
-/* POINTWISE A */
-/* Первый этап отдаёт словарь критерий -> список оценок по разметчикам, где 0
-   значит «критерий не оценили». Разворачиваем словарь, разворачиваем список и
-   берём среднее по критерию, выбрасывая нули: иначе один неоценивший тянул бы
-   средний балл вниз. Читаем из $prep, а не из $rows_norm: список оценок уже
-   содержит всех разметчиков, и через $rows_norm каждое значение размножилось бы
-   по числу разметчиков. Здесь clarity остаётся — это критерий оценки, не маркер. */
-
-$pwA_items = (
-    SELECT
-        rn.task_id AS task_id,
-        CAST(item.0 AS String) AS pw_key,
-        item.1 AS pw_vals
-    FROM (
-        SELECT
-            task_id,
-            Yson::ConvertTo(
-                pointwise_A,
-                Dict<String, List<Double>>,
-                $pw_opts
-            ) AS pw_dict
-        FROM $prep
-        WHERE pointwise_A IS NOT NULL AND NOT Yson::IsList(pointwise_A)
-    ) AS rn
-    FLATTEN DICT BY pw_dict AS item
-);
-
-$pwA_flat = (
-    SELECT
-        task_id,
-        pw_key,
-        pw_val
-    FROM $pwA_items
-    FLATTEN LIST BY pw_vals AS pw_val
-);
-
-$pwA_key = (
-    SELECT
-        n.task_id AS task_id,
-        n.pw_key AS pw_key,
-        AVG(n.pw_val) AS pw_avg
-    FROM $pwA_flat AS n
-    WHERE n.pw_val IS NOT NULL AND n.pw_val != 0.0
-    GROUP BY n.task_id, n.pw_key
-);
-
-$pwA_instr = (
-    SELECT
-        k.task_id AS task_id,
-        MAX(CASE WHEN k.pw_key = "clarity" THEN k.pw_avg ELSE NULL END) AS clarity,
-        MAX(CASE WHEN k.pw_key = "connect" THEN k.pw_avg ELSE NULL END) AS connect,
-        MAX(CASE WHEN k.pw_key = "liveliness" THEN k.pw_avg ELSE NULL END) AS liveliness,
-        MAX(CASE WHEN k.pw_key = "overall" THEN k.pw_avg ELSE NULL END) AS overall
-    FROM $pwA_key AS k
-    GROUP BY k.task_id
-);
-
-/* POINTWISE B */
-
-$pwB_items = (
-    SELECT
-        rn.task_id AS task_id,
-        CAST(item.0 AS String) AS pw_key,
-        item.1 AS pw_vals
-    FROM (
-        SELECT
-            task_id,
-            Yson::ConvertTo(
-                pointwise_B,
-                Dict<String, List<Double>>,
-                $pw_opts
-            ) AS pw_dict
-        FROM $prep
-        WHERE pointwise_B IS NOT NULL AND NOT Yson::IsList(pointwise_B)
-    ) AS rn
-    FLATTEN DICT BY pw_dict AS item
-);
-
-$pwB_flat = (
-    SELECT
-        task_id,
-        pw_key,
-        pw_val
-    FROM $pwB_items
-    FLATTEN LIST BY pw_vals AS pw_val
-);
-
-$pwB_key = (
-    SELECT
-        n.task_id AS task_id,
-        n.pw_key AS pw_key,
-        AVG(n.pw_val) AS pw_avg
-    FROM $pwB_flat AS n
-    WHERE n.pw_val IS NOT NULL AND n.pw_val != 0.0
-    GROUP BY n.task_id, n.pw_key
-);
-
-$pwB_instr = (
-    SELECT
-        k.task_id AS task_id,
-        MAX(CASE WHEN k.pw_key = "clarity" THEN k.pw_avg ELSE NULL END) AS clarity,
-        MAX(CASE WHEN k.pw_key = "connect" THEN k.pw_avg ELSE NULL END) AS connect,
-        MAX(CASE WHEN k.pw_key = "liveliness" THEN k.pw_avg ELSE NULL END) AS liveliness,
-        MAX(CASE WHEN k.pw_key = "overall" THEN k.pw_avg ELSE NULL END) AS overall
-    FROM $pwB_key AS k
-    GROUP BY k.task_id
-);
-
 /* BOOL AGGREGATES */
 
 $flags_instr = (
@@ -538,6 +427,8 @@ $metadata_rows = (
         SOME(p.markers) AS markers,
         SOME(p.annotations) AS annotations,
         SOME(p.checkboxes) AS checkboxes,
+        SOME(p.pointwise_A) AS pointwise_A,
+        SOME(p.pointwise_B) AS pointwise_B,
         SOME(p.general_comments) AS general_comments,
         SOME(p.comments_A) AS comments_A,
         SOME(p.comments_B) AS comments_B
@@ -690,29 +581,10 @@ FROM (
                 END
         END AS checkboxes_2,
 
-        -- У пропущенного задания оценок нет, поэтому там NULL, а не нули:
-        -- ноль читался бы как выставленный балл.
-        CASE
-            WHEN COALESCE(a.skip, false) THEN NULL
-            WHEN pwA.task_id IS NULL THEN NULL
-            ELSE AsStruct(
-                pwA.clarity AS clarity,
-                pwA.connect AS connect,
-                pwA.liveliness AS liveliness,
-                pwA.overall AS overall
-            )
-        END AS pointwise_1,
-
-        CASE
-            WHEN COALESCE(a.skip, false) THEN NULL
-            WHEN pwB.task_id IS NULL THEN NULL
-            ELSE AsStruct(
-                pwB.clarity AS clarity,
-                pwB.connect AS connect,
-                pwB.liveliness AS liveliness,
-                pwB.overall AS overall
-            )
-        END AS pointwise_2,
+        -- Оценки идут как есть из первого этапа: словарь критерий -> список
+        -- оценок по разметчикам.
+        m.pointwise_A AS pointwise_1,
+        m.pointwise_B AS pointwise_2,
 
         m.comments_A AS comments_A,
         m.comments_B AS comments_B,
@@ -767,9 +639,5 @@ FROM (
         ON m.task_id = cA0.task_id
     LEFT JOIN $cbB_false_instr AS cB0
         ON m.task_id = cB0.task_id
-    LEFT JOIN $pwA_instr AS pwA
-        ON m.task_id = pwA.task_id
-    LEFT JOIN $pwB_instr AS pwB
-        ON m.task_id = pwB.task_id
 ) AS s
 ;

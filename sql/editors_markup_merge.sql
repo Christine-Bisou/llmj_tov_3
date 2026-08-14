@@ -165,6 +165,7 @@ $prep = (
         real_source_A,
         real_source_B,
         rownum,
+        ticket,
         assignment_ids,
         metadata,
         markers,
@@ -735,6 +736,7 @@ $metadata_rows = (
         SOME(real_source_A) AS real_source_A,
         SOME(real_source_B) AS real_source_B,
         SOME(rownum) AS rownum,
+        SOME(ticket) AS ticket,
         SOME(assignment_ids) AS assignment_ids,
         SOME(metadata) AS metadata,
         SOME(markers) AS markers,
@@ -834,7 +836,7 @@ $result_markup = (
             AsTuple("answer_A", Just(Yson::From(m.answer_A))),
             AsTuple("answer_B", Just(Yson::From(m.answer_B))),
             AsTuple("task_id", Just(Yson::From($str_string(m.task_id)))),
-            AsTuple("rownum", Just(Yson::From(m.rownum))),
+            AsTuple("ticket", Just(Yson::From(m.ticket))),
             AsTuple("pool_id", Just(Yson::From(m.pool_id))),
             AsTuple("project_id", Just(Yson::From(m.project_id))),
             -- Обвязка задания собрана первым этапом, здесь идёт как есть.
@@ -917,7 +919,7 @@ $result_markup = (
 
         Just(Yson::From(ToDict(AsList(
             AsTuple("task_id", Just(Yson::From($str_string(m.task_id)))),
-            AsTuple("rownum", Just(Yson::From(m.rownum))),
+            AsTuple("ticket", Just(Yson::From(m.ticket))),
             AsTuple("pool_id", Just(Yson::From(m.pool_id))),
             AsTuple("project_id", Just(Yson::From(m.project_id))),
             AsTuple("markup_metadata", COALESCE(m.markup_metadata, $empty_dict)),

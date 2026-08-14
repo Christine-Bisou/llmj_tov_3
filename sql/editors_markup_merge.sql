@@ -10,7 +10,8 @@ DECLARE $input1 AS String; -- Основная базовая таблица (а
 DECLARE $input2 AS String; -- Таблица с task_summarization
 DECLARE $input3 AS String; -- Таблица с ответами джаджа (LLM-судья)
 DECLARE $input4 AS String; -- Изначальная таблица
-DECLARE $output1 AS String; -- Итоговая выходная таблица
+DECLARE $output1 AS String; -- Агрегат по заданию плоскими колонками
+DECLARE $output2 AS String; -- Вход 4 как есть + agg_tov_markup / raw_tov_markup
 
 $str_yson = ($x) -> (
     COALESCE(Yson::ConvertToString(Just(Yson::From($x))), "")
@@ -827,6 +828,62 @@ $result_markup = (
     SELECT
         m.group_key AS group_key,
 
+        -- Плоский агрегат по заданию: то же, что в словаре, но колонками.
+        -- Комментарии сюда не идут — они поразметчиковые, сворачивать их не во
+        -- что; за ними в raw_tov_markup.
+        $str_string(m.task_id) AS task_id,
+        m.rownum AS rownum,
+        m.pool_id AS pool_id,
+        m.project_id AS project_id,
+        m.ticket AS ticket,
+        m.basket_table AS basket_table,
+
+        m.answer_A AS answer_A,
+        m.answer_B AS answer_B,
+        m.source_A AS source_A,
+        m.source_B AS source_B,
+        m.real_source_A AS real_source_A,
+        m.real_source_B AS real_source_B,
+
+        m.worker_ids AS worker_ids,
+        m.assignment_ids AS assignment_ids,
+
+        COALESCE(a.skip, false) AS skip,
+        a.winner_internal AS winner,
+        a.winner_agreement AS winner_agreement,
+        a.winner_strength AS winner_strength,
+
+        CASE WHEN COALESCE(a.skip, false) THEN false ELSE f.diff_pa END AS diff_pa,
+        a.diff_pa_winner_internal AS diff_pa_winner,
+        a.diff_pa_winner_agreement AS diff_pa_winner_agreement,
+        a.diff_pa_winner_strength AS diff_pa_winner_strength,
+
+        CASE WHEN COALESCE(a.skip, false) THEN false ELSE f.direct_speech_A END AS direct_speech_A,
+        CASE WHEN COALESCE(a.skip, false) THEN false ELSE f.direct_speech_B END AS direct_speech_B,
+
+        COALESCE(
+            CASE
+                WHEN COALESCE(a.skip, false) THEN cA0.checkboxes_A
+                ELSE cA.checkboxes_A
+            END,
+            $empty_dict
+        ) AS checkboxes_A,
+        COALESCE(
+            CASE
+                WHEN COALESCE(a.skip, false) THEN cB0.checkboxes_B
+                ELSE cB.checkboxes_B
+            END,
+            $empty_dict
+        ) AS checkboxes_B,
+
+        COALESCE(pwA.pointwise_A, $empty_dict) AS pointwise_A,
+        COALESCE(pwB.pointwise_B, $empty_dict) AS pointwise_B,
+
+        COALESCE(m.markers, $empty_list) AS markers,
+        COALESCE(m.checkboxes, $empty_dict) AS checkboxes,
+        COALESCE(m.markup_metadata, $empty_dict) AS markup_metadata,
+        i2.task_summarization AS task_summarization,
+
         Just(Yson::From(ToDict(AsList(
             AsTuple("answer_A", Just(Yson::From(m.answer_A))),
             AsTuple("answer_B", Just(Yson::From(m.answer_B))),
@@ -957,10 +1014,59 @@ $result_markup = (
 );
 
 -- ==========================================================
--- ИТОГОВЫЙ ИНСЕРТ
+-- ВЫХОД 1: АГРЕГАТ ПЛОСКИМИ КОЛОНКАМИ
 -- ==========================================================
 
 INSERT INTO $output1
+WITH TRUNCATE
+SELECT
+    rm.group_key AS instruct_id,
+    rm.task_id AS task_id,
+    rm.rownum AS rownum,
+    rm.pool_id AS pool_id,
+    rm.project_id AS project_id,
+    rm.ticket AS ticket,
+    rm.basket_table AS basket_table,
+
+    rm.answer_A AS answer_A,
+    rm.answer_B AS answer_B,
+    rm.source_A AS source_A,
+    rm.source_B AS source_B,
+    rm.real_source_A AS real_source_A,
+    rm.real_source_B AS real_source_B,
+
+    rm.worker_ids AS worker_ids,
+    rm.assignment_ids AS assignment_ids,
+
+    rm.skip AS skip,
+    rm.winner AS winner,
+    rm.winner_agreement AS winner_agreement,
+    rm.winner_strength AS winner_strength,
+
+    rm.diff_pa AS diff_pa,
+    rm.diff_pa_winner AS diff_pa_winner,
+    rm.diff_pa_winner_agreement AS diff_pa_winner_agreement,
+    rm.diff_pa_winner_strength AS diff_pa_winner_strength,
+
+    rm.direct_speech_A AS direct_speech_A,
+    rm.direct_speech_B AS direct_speech_B,
+
+    rm.checkboxes_A AS checkboxes_A,
+    rm.checkboxes_B AS checkboxes_B,
+    rm.pointwise_A AS pointwise_A,
+    rm.pointwise_B AS pointwise_B,
+
+    rm.markers AS markers,
+    rm.checkboxes AS checkboxes,
+    rm.markup_metadata AS markup_metadata,
+    rm.task_summarization AS task_summarization
+FROM $result_markup AS rm;
+
+-- ==========================================================
+-- ВЫХОД 2: ВХОД 4 КАК ЕСТЬ + СЛОВАРИ РАЗМЕТКИ
+-- ==========================================================
+
+INSERT INTO $output2
 WITH TRUNCATE
 SELECT
     i4.answers AS answers,

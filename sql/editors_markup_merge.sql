@@ -827,12 +827,6 @@ $result_markup = (
     SELECT
         m.group_key AS group_key,
 
-        -- Отдельными колонками, а не только ключами внутри словарей: по ним
-        -- фильтруют и сортируют, доставать их разбором Yson неудобно.
-        m.rownum AS rownum,
-        m.real_source_A AS real_source_A,
-        m.real_source_B AS real_source_B,
-
         Just(Yson::From(ToDict(AsList(
             AsTuple("answer_A", Just(Yson::From(m.answer_A))),
             AsTuple("answer_B", Just(Yson::From(m.answer_B))),
@@ -973,10 +967,6 @@ SELECT
     i4.input_final_messages AS input_final_messages,
     i4.input_meta AS input_meta,
     i4.input_render_data AS input_render_data,
-
-    rm.rownum AS rownum,
-    rm.real_source_A AS real_source_A,
-    rm.real_source_B AS real_source_B,
 
     rm.tov_markup AS agg_tov_markup,
     rm.raw_tov_markup AS raw_tov_markup

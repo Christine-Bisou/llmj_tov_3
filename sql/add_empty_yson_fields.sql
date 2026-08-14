@@ -1,15 +1,15 @@
-PRAGMA Yson.AutoConvert;
-PRAGMA yson.DisableStrict;
-PRAGMA SimpleColumns;
-PRAGMA AnsiOptionalAs;
-PRAGMA AnsiInForEmptyOrNullableItemsCollections;
-PRAGMA yt.UseNativeYtTypes;
-PRAGMA yt.InferSchema = '1';
-
 DECLARE $input1 AS String;
 DECLARE $output1 AS String;
 
-$empty = Yson::ParseJson('{}');
+PRAGMA yt.InferSchema = "100";
+PRAGMA AnsiInForEmptyOrNullableItemsCollections;
+PRAGMA AnsiOptionalAs;
+PRAGMA yt.UseNativeYtTypes;
+PRAGMA yson.DisableStrict;
+PRAGMA Yson.AutoConvert;
+PRAGMA SimpleColumns;
+
+$empty = Yson::ParseJson("{}");
 
 INSERT INTO $output1 WITH TRUNCATE
 SELECT

@@ -166,8 +166,10 @@ $prep = (
         real_source_A,
         real_source_B,
         rownum,
-        ticket,
-        basket_table,
+        -- Тикет и корзину достаём из markup_metadata, а не отдельными
+        -- колонками: в словаре они есть всегда, а колонки появились позже.
+        $str_yson(markup_metadata.ticket) AS ticket,
+        $str_yson(markup_metadata.basket_table) AS basket_table,
         assignment_ids,
         metadata,
         markers,

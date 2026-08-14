@@ -323,26 +323,24 @@ $final_metrics = (
         p.is_mapped AS is_mapped,
         p.norm_m1 AS _norm_m1,
 
-        -- Маппинг для первого выхода: если ALL, то заменяем на спарсенное значение
+        -- Пара, по которой посчитан срез. У общей строки пары нет, поэтому там
+        -- вместо заглушки ALL стоят имена из входных колонок прогона.
         Yson::From(ToDict(AsList(
             AsTuple("model_1", CASE WHEN p.norm_m1 = "ALL" THEN p.orig_model_1 ELSE p.norm_m1 END),
             AsTuple("model_2", CASE WHEN p.norm_m2 = "ALL" THEN p.orig_model_2 ELSE p.norm_m2 END)
-        ))) AS models_mapping_orig,
+        ))) AS models_mapping,
 
-        -- Маппинг с добавлением уровня (level) для второго выхода:
-        -- Тоже заменяем ALL на реальное имя, вытащенное вашим алгоритмом
-        Yson::From(ToDict(AsList(
-            AsTuple("model_1", CASE WHEN p.norm_m1 = "ALL" THEN p.orig_model_1 ELSE p.norm_m1 END),
-            AsTuple("model_2", CASE WHEN p.norm_m2 = "ALL" THEN p.orig_model_2 ELSE p.norm_m2 END),
-            AsTuple("level",
-                CASE
-                    WHEN p.is_mapped = 0 AND p.norm_m1 = "ALL" THEN "global"
-                    WHEN p.is_mapped = 0 AND p.norm_m1 != "ALL" THEN "producer_name"
-                    WHEN p.is_mapped = 1 AND p.norm_m1 != "ALL" THEN "real_model_name"
-                    ELSE ""
-                END
-            )
-        ))) AS models_mapping_with_level,
+        -- Уровень подсчёта отдельной колонкой:
+        --   input       — одна общая строка по всему прогону, имена моделей как
+        --                 они пришли на вход;
+        --   source      — попарно по source_A/source_B, каждая с каждой;
+        --   real_source — то же попарно, но по настоящим именам моделей.
+        CASE
+            WHEN p.is_mapped = 0 AND p.norm_m1 = "ALL" THEN "input"
+            WHEN p.is_mapped = 0 AND p.norm_m1 != "ALL" THEN "source"
+            WHEN p.is_mapped = 1 AND p.norm_m1 != "ALL" THEN "real_source"
+            ELSE ""
+        END AS level,
 
         i2.pool_summarization AS pool_summarization,
         p.accepted AS accepted, p.avg_overlap AS avg_overlap,
@@ -436,21 +434,21 @@ $final_metrics = (
     LEFT JOIN $input2_prepared AS i2 ON CAST(p.pool_id AS String) = i2.pool_id
 );
 
--- 1. Выгружаем общую (глобальную) строку в $output1
+-- 1. Выгружаем общую строку по прогону в $output1.
+-- Уровень тут всегда один и тот же, поэтому колонки level в этом выходе нет.
 INSERT INTO $output1
 SELECT
-    t.*,
-    t.models_mapping_orig AS models_mapping
-WITHOUT t.is_mapped, t._norm_m1, t.models_mapping_orig, t.models_mapping_with_level
+    t.*
+WITHOUT t.is_mapped, t._norm_m1, t.level
 FROM $final_metrics AS t
 WHERE is_mapped = 0 AND _norm_m1 = "ALL";
 
--- 2. Выгружаем все три среза данных во второй выход $output2
+-- 2. Выгружаем все три уровня во второй выход $output2:
+-- общая строка по входным именам, попарно по source и попарно по real_source.
 INSERT INTO $output2
 SELECT
-    t.*,
-    t.models_mapping_with_level AS models_mapping
-WITHOUT t.is_mapped, t._norm_m1, t.models_mapping_orig, t.models_mapping_with_level
+    t.*
+WITHOUT t.is_mapped, t._norm_m1
 FROM $final_metrics AS t
 WHERE (is_mapped = 0 AND _norm_m1 = "ALL")
    OR (is_mapped = 0 AND _norm_m1 != "ALL")

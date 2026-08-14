@@ -290,10 +290,15 @@ $base = (
 
         t.inputValues.metadata AS meta,
 
-        -- Из метаданных отдельной колонкой достаётся только rownum: остальное
-        -- (корзина, тикет, тип пула, настоящие модели) лежит в markup_metadata
-        -- и в metadata, дублировать его колонками незачем.
+        -- Из метаданных отдельными колонками достаются только rownum и
+        -- настоящие имена моделей: корзина, тикет и тип пула лежат в
+        -- markup_metadata, дублировать их колонками незачем.
         $num(t.inputValues.metadata.rownum) AS meta_rownum,
+
+        -- В metadata.models лежит прогон, в real_models — сама модель. Метрики
+        -- строят по ним срез real_model_name, поэтому они идут колонками.
+        $str(t.inputValues.metadata.real_models.model_1) AS meta_real_source_A,
+        $str(t.inputValues.metadata.real_models.model_2) AS meta_real_source_B,
 
         t.inputValues.checkboxes AS checkboxes,
         COALESCE(t.inputValues.dialog, t.inputValues.dialog_altformat) AS dialog,
@@ -350,6 +355,8 @@ $norm = (
 
         b.meta AS meta,
         b.meta_rownum AS meta_rownum,
+        b.meta_real_source_A AS meta_real_source_A,
+        b.meta_real_source_B AS meta_real_source_B,
         b.checkboxes AS checkboxes,
         b.dialog AS dialog,
         b.markers AS markers
@@ -370,6 +377,8 @@ $main_agg = (
 
         SOME(meta) AS meta,
         SOME(meta_rownum) AS meta_rownum,
+        SOME(meta_real_source_A) AS meta_real_source_A,
+        SOME(meta_real_source_B) AS meta_real_source_B,
         SOME(checkboxes) AS checkboxes,
         SOME(dialog) AS dialog,
         SOME(markers) AS markers
@@ -498,6 +507,8 @@ WITH TRUNCATE
 SELECT
     m.source_A AS source_A,
     m.source_B AS source_B,
+    m.meta_real_source_A AS real_source_A,
+    m.meta_real_source_B AS real_source_B,
     m.task_id AS task_id,
     m.meta_rownum AS rownum,
     bm.assignment_ids AS assignment_ids,

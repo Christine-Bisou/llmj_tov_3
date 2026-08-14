@@ -167,6 +167,8 @@ $prep = (
         answer_B,
         source_A,
         source_B,
+        real_source_A,
+        real_source_B,
         rownum,
         assignment_ids,
         markers,
@@ -732,6 +734,8 @@ $metadata_rows = (
         SOME(answer_B) AS answer_B,
         SOME(source_A) AS source_A,
         SOME(source_B) AS source_B,
+        SOME(real_source_A) AS real_source_A,
+        SOME(real_source_B) AS real_source_B,
         SOME(rownum) AS rownum,
         SOME(assignment_ids) AS assignment_ids,
         SOME(markers) AS markers,
@@ -831,6 +835,8 @@ $result_markup = (
         m.answer_B AS answer_B,
         m.source_A AS source_A,
         m.source_B AS source_B,
+        m.real_source_A AS real_source_A,
+        m.real_source_B AS real_source_B,
 
         m.worker_ids AS worker_ids,
         m.assignment_ids AS assignment_ids,
@@ -875,7 +881,6 @@ $result_markup = (
             AsTuple("answer_A", Just(Yson::From(m.answer_A))),
             AsTuple("answer_B", Just(Yson::From(m.answer_B))),
             AsTuple("task_id", Just(Yson::From($str_string(m.task_id)))),
-            AsTuple("rownum", Just(Yson::From(m.rownum))),
             -- Обвязка задания собрана первым этапом, здесь идёт как есть:
             -- тикет, корзина, тип пула, пул и проект читаются из этого словаря.
             AsTuple("markup_metadata", COALESCE(m.markup_metadata, $empty_dict)),
@@ -943,6 +948,8 @@ $result_markup = (
             ),
             AsTuple("source_A", Just(Yson::From(m.source_A))),
             AsTuple("source_B", Just(Yson::From(m.source_B))),
+            AsTuple("real_source_A", Just(Yson::From(m.real_source_A))),
+            AsTuple("real_source_B", Just(Yson::From(m.real_source_B))),
 
             -- ИЗМЕНЕНО: убрана приставка source_
             AsTuple("winner", Just(Yson::From(a.winner_internal))),
@@ -955,13 +962,14 @@ $result_markup = (
 
         Just(Yson::From(ToDict(AsList(
             AsTuple("task_id", Just(Yson::From($str_string(m.task_id)))),
-            AsTuple("rownum", Just(Yson::From(m.rownum))),
             AsTuple("markup_metadata", COALESCE(m.markup_metadata, $empty_dict)),
 
             AsTuple("answer_A", Just(Yson::From(m.answer_A))),
             AsTuple("answer_B", Just(Yson::From(m.answer_B))),
             AsTuple("source_A", Just(Yson::From(m.source_A))),
             AsTuple("source_B", Just(Yson::From(m.source_B))),
+            AsTuple("real_source_A", Just(Yson::From(m.real_source_A))),
+            AsTuple("real_source_B", Just(Yson::From(m.real_source_B))),
 
             AsTuple("checkboxes", COALESCE(m.checkboxes, $empty_dict)),
             AsTuple("markers", COALESCE(m.markers, $empty_list)),
@@ -1006,6 +1014,8 @@ SELECT
     rm.answer_B AS answer_B,
     rm.source_A AS source_A,
     rm.source_B AS source_B,
+    rm.real_source_A AS real_source_A,
+    rm.real_source_B AS real_source_B,
 
     rm.worker_ids AS worker_ids,
     rm.assignment_ids AS assignment_ids,

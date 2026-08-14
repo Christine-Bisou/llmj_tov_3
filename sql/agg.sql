@@ -1087,6 +1087,9 @@ SELECT
     i4.input_meta AS input_meta,
     i4.input_render_data AS input_render_data,
 
+    -- rownum в словари не кладётся: он идёт своей колонкой рядом с ними.
+    rm.rownum AS rownum,
+
     rm.tov_markup AS agg_tov_markup,
     rm.raw_tov_markup AS raw_tov_markup
 FROM $input4_prep AS i4

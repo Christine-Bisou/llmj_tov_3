@@ -158,7 +158,8 @@ $judge_parsed = (
 
 -- Из метаданных наверх поднимается только rownum: тикет, корзина, тип пула и
 -- настоящие модели лежат в markup_metadata и идут дальше внутри него, отдельными
--- колонками их не разворачиваем.
+-- колонками их не разворачиваем. Пул достаётся оттуда же и только ради ссылки
+-- на задание — своей колонкой он никуда не идёт.
 $prep = (
     SELECT
         $str_yson(metadata.instruct_id) AS group_key,
@@ -188,8 +189,7 @@ $prep = (
         source_winner,
         task_id,
         worker_ids,
-        pool_id,
-        project_id,
+        $str_yson(markup_metadata.pool_id) AS pool_id,
         editors_markup_dts,
         ListFromRange(0u, CAST(ListLength(assignment_ids) AS Uint64)) AS idxs
     FROM $input1
@@ -741,7 +741,6 @@ $metadata_rows = (
         SOME(task_id) AS task_id,
         SOME(worker_ids) AS worker_ids,
         SOME(pool_id) AS pool_id,
-        SOME(project_id) AS project_id,
         SOME(general_comments) AS general_comments,
         SOME(comments_A) AS comments_A,
         SOME(comments_B) AS comments_B,
@@ -827,8 +826,6 @@ $result_markup = (
         -- не разворачиваются: они лежат в markup_metadata.
         $str_string(m.task_id) AS task_id,
         m.rownum AS rownum,
-        m.pool_id AS pool_id,
-        m.project_id AS project_id,
 
         m.answer_A AS answer_A,
         m.answer_B AS answer_B,
@@ -879,10 +876,8 @@ $result_markup = (
             AsTuple("answer_B", Just(Yson::From(m.answer_B))),
             AsTuple("task_id", Just(Yson::From($str_string(m.task_id)))),
             AsTuple("rownum", Just(Yson::From(m.rownum))),
-            AsTuple("pool_id", Just(Yson::From(m.pool_id))),
-            AsTuple("project_id", Just(Yson::From(m.project_id))),
             -- Обвязка задания собрана первым этапом, здесь идёт как есть:
-            -- тикет, корзина и тип пула читаются из этого словаря.
+            -- тикет, корзина, тип пула, пул и проект читаются из этого словаря.
             AsTuple("markup_metadata", COALESCE(m.markup_metadata, $empty_dict)),
             AsTuple("worker_ids", Just(Yson::From(m.worker_ids))),
 
@@ -961,8 +956,6 @@ $result_markup = (
         Just(Yson::From(ToDict(AsList(
             AsTuple("task_id", Just(Yson::From($str_string(m.task_id)))),
             AsTuple("rownum", Just(Yson::From(m.rownum))),
-            AsTuple("pool_id", Just(Yson::From(m.pool_id))),
-            AsTuple("project_id", Just(Yson::From(m.project_id))),
             AsTuple("markup_metadata", COALESCE(m.markup_metadata, $empty_dict)),
 
             AsTuple("answer_A", Just(Yson::From(m.answer_A))),
@@ -1008,8 +1001,6 @@ SELECT
     rm.group_key AS instruct_id,
     rm.task_id AS task_id,
     rm.rownum AS rownum,
-    rm.pool_id AS pool_id,
-    rm.project_id AS project_id,
 
     rm.answer_A AS answer_A,
     rm.answer_B AS answer_B,

@@ -496,7 +496,6 @@ $annotations_packed = (
 INSERT INTO $output1
 WITH TRUNCATE
 SELECT
-    p.project_id AS project_id,
     m.source_A AS source_A,
     m.source_B AS source_B,
     m.task_id AS task_id,
@@ -504,7 +503,6 @@ SELECT
     bm.assignment_ids AS assignment_ids,
     bm.worker_ids AS worker_ids,
     bm.editors_markup_dts AS editors_markup_dts,
-    m.pool_id AS pool_id,
     m.answer_A AS answer_A,
     m.answer_B AS answer_B,
     bm.skip AS skip,
@@ -524,7 +522,8 @@ SELECT
     IF(m.meta IS NULL, Yson::From(ToDict(AsList())), m.meta) AS metadata,
     -- Разметочная обвязка задания читается прямо из metadata — отдельных
     -- meta-колонок для неё больше нет. Значения бывают строкой "null" — так их
-    -- и кладёт форма, не трогаем.
+    -- и кладёт форма, не трогаем. Пул и проект тоже живут только здесь:
+    -- своими колонками они не выводятся.
     -- Внешний Just: строгий Yson в YT не пишется, колонка должна быть
     -- Optional<Yson>. Остальные Yson-колонки оптиональны сами — они приходят
     -- из LEFT JOIN. rownum здесь не дублируется: он идёт своей колонкой.

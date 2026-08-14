@@ -5,7 +5,6 @@ PRAGMA yson.DisableStrict;
 
 DECLARE $input1 AS String;  -- raw: поразметчиковые списки по заданию
 DECLARE $input2 AS String;  -- agg: плоские колонки по заданию
-DECLARE $input3 AS String;  -- второй выход agg: answers / input_* / словари разметки
 DECLARE $output1 AS String; -- строка на разметчика (будущий raw storage)
 DECLARE $output2 AS String; -- строка на задание (будущий agg storage)
 
@@ -124,31 +123,6 @@ $last_dialog_query = ($dialog) -> (
     )
 );
 
--- Исходное задание из второго выхода agg. instruct_id там лежит внутри
--- input_meta, отдельной колонки нет. Сворачиваем по instruct_id: если на один
--- инстракт придёт несколько строк, LEFT JOIN размножил бы разметку.
-$task_input_prep = (
-    SELECT
-        $str(input_meta.instruct_id) AS instruct_id,
-        answers,
-        input_final_messages,
-        input_meta,
-        input_render_data
-    FROM $input3
-    WHERE $str(input_meta.instruct_id) != ""
-);
-
-$task_input = (
-    SELECT
-        instruct_id,
-        SOME(answers) AS answers,
-        SOME(input_final_messages) AS input_final_messages,
-        SOME(input_meta) AS input_meta,
-        SOME(input_render_data) AS input_render_data
-    FROM $task_input_prep
-    GROUP BY instruct_id
-);
-
 $prep = (
     SELECT
         t.*,
@@ -252,7 +226,8 @@ INSERT INTO $output1
 SELECT
     COALESCE(w.answer_A, "") AS answer_A,
     COALESCE(w.answer_B, "") AS answer_B,
-    t.answers AS answers,
+    -- Исходное задание приходит колонками агрегата, отдельного входа под него нет.
+    a.answers AS answers,
     COALESCE(w.assignment_id, "") AS assignment_id,
     COALESCE(w.assignment_link, "") AS assignment_link,
     w.checkboxes AS checkboxes,
@@ -297,9 +272,9 @@ SELECT
     COALESCE(w.editors_markup_dt, "") AS editors_markup_dt,
     COALESCE(w.general_comment_worker, "") AS general_comment_worker,
 
-    t.input_final_messages AS input_final_messages,
-    t.input_meta AS input_meta,
-    t.input_render_data AS input_render_data,
+    a.input_final_messages AS input_final_messages,
+    a.input_meta AS input_meta,
+    a.input_render_data AS input_render_data,
 
     CAST(a.instruct_id AS String?) AS instruct_id,
     w.instruct AS instruct,
@@ -331,15 +306,13 @@ SELECT
 FROM $worker_rows AS w
 LEFT JOIN $input2 AS a
     ON w.task_id = a.task_id
-LEFT JOIN $task_input AS t
-    ON CAST(a.instruct_id AS String) = t.instruct_id
 ;
 
 INSERT INTO $output2
 SELECT
     a.answer_A AS answer_A,
     a.answer_B AS answer_B,
-    t.answers AS answers,
+    a.answers AS answers,
     a.assignment_ids AS assignment_ids,
     a.assignments_links AS assignments_links,
     a.checkboxes AS checkboxes,
@@ -356,9 +329,9 @@ SELECT
     a.direct_speech_B AS direct_speech_B,
     a.editors_markup_dts AS editors_markup_dts,
     a.general_comments AS general_comments,
-    t.input_final_messages AS input_final_messages,
-    t.input_meta AS input_meta,
-    t.input_render_data AS input_render_data,
+    a.input_final_messages AS input_final_messages,
+    a.input_meta AS input_meta,
+    a.input_render_data AS input_render_data,
     a.instruct_id AS instruct_id,
     CAST(a.marker_text_parts_A AS Yson?) AS marker_text_parts_A,
     CAST(a.marker_text_parts_B AS Yson?) AS marker_text_parts_B,
@@ -380,6 +353,4 @@ SELECT
     CAST(a.task_summarization AS String?) AS task_summarization,
     a.worker_ids AS worker_ids
 FROM $input2 AS a
-LEFT JOIN $task_input AS t
-    ON CAST(a.instruct_id AS String) = t.instruct_id
 ;

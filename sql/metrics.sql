@@ -30,6 +30,21 @@ $input2_prepared = (
     FROM $input2
 );
 
+-- Агрегат под имена, которых метрики ждут исторически: победитель там теперь
+-- winner, пул лежит в markup_metadata, а перекрытие — это длина списка
+-- разметчиков задания, отдельной колонки под него больше нет.
+$agg_src = (
+    SELECT
+        a.*,
+        a.winner AS source_winner,
+        a.winner_agreement AS source_winner_agreement,
+        a.winner_strength AS source_winner_strength,
+        CAST(IF(a.assignment_ids IS NULL, 0u, ListLength(a.assignment_ids)) AS Int64) AS task_count,
+        $str(a.markup_metadata.pool_id) AS pool_id
+    WITHOUT a.winner, a.winner_agreement, a.winner_strength
+    FROM $input1 AS a
+);
+
 -- 0 - Исходные данные (без маппинга)
 $input1_prep = (
     SELECT
@@ -39,7 +54,7 @@ $input1_prep = (
         CAST($str(a.metadata.models.model_2) AS String) AS meta_model_2,
         CAST($str(a.metadata.models.model_prod) AS String) AS meta_model_prod,
         CAST($str(a.metadata.models.model_test) AS String) AS meta_model_test
-    FROM $input1 AS a
+    FROM $agg_src AS a
 );
 
 -- 1 - Данные с заменой на настоящее имя модели.
@@ -88,7 +103,7 @@ $input1_mapped = (
             ELSE $str(a.metadata.models.model_test)
         END AS String) AS meta_model_test
     WITHOUT a.source_A, a.source_B, a.source_winner, a.diff_pa_winner
-    FROM $input1 AS a
+    FROM $agg_src AS a
 );
 
 -- Объединяем оба набора данных в одну таблицу
@@ -259,9 +274,7 @@ $all_mapped = (
         CASE WHEN r.source_A = r._target_m1 THEN r.checkboxes_A WHEN r.source_B = r._target_m1 THEN r.checkboxes_B ELSE NULL END AS cb_m1,
         CASE WHEN r.source_A = r._target_m2 THEN r.checkboxes_A WHEN r.source_B = r._target_m2 THEN r.checkboxes_B ELSE NULL END AS cb_m2,
         CASE WHEN r.source_A = r._target_m1 THEN r.pointwise_A WHEN r.source_B = r._target_m1 THEN r.pointwise_B ELSE NULL END AS pw_m1,
-        CASE WHEN r.source_A = r._target_m2 THEN r.pointwise_A WHEN r.source_B = r._target_m2 THEN r.pointwise_B ELSE NULL END AS pw_m2,
-        CAST(CASE WHEN r.source_A = r._target_m1 THEN r.pointwise_A_overall WHEN r.source_B = r._target_m1 THEN r.pointwise_B_overall ELSE NULL END AS Double) AS pw_overall_m1,
-        CAST(CASE WHEN r.source_A = r._target_m2 THEN r.pointwise_A_overall WHEN r.source_B = r._target_m2 THEN r.pointwise_B_overall ELSE NULL END AS Double) AS pw_overall_m2
+        CASE WHEN r.source_A = r._target_m2 THEN r.pointwise_A WHEN r.source_B = r._target_m2 THEN r.pointwise_B ELSE NULL END AS pw_m2
     FROM $all_rows_extended AS r
 );
 
@@ -287,24 +300,18 @@ $cb_m2_pct = (
 );
 
 /* === POINTWISE DICTIONARIES === */
+/* overall отдельной колонкой не приходит: агрегат кладёт его обычным ключом
+   словаря, поэтому он разворачивается вместе с остальными критериями. */
 $pw_m1_flat = (
-    SELECT * FROM (
-        SELECT x.is_mapped AS is_mapped, x.norm_m1 AS norm_m1, x.norm_m2 AS norm_m2, CAST(x.items.0 AS String) AS pw_key, CAST(Yson::ConvertToDouble(x.items.1) AS Double) AS pw_val
-        FROM (SELECT m.is_mapped AS is_mapped, m.norm_m1 AS norm_m1, m.norm_m2 AS norm_m2, DictItems(Yson::ConvertToDict(m.pw_m1)) AS items FROM $all_mapped AS m WHERE m.pw_m1 IS NOT NULL AND NOT Yson::IsList(m.pw_m1)) AS x FLATTEN BY (items)
-    )
-    UNION ALL
-    SELECT is_mapped, norm_m1, norm_m2, "overall" AS pw_key, pw_overall_m1 AS pw_val FROM $all_mapped WHERE pw_overall_m1 IS NOT NULL
+    SELECT x.is_mapped AS is_mapped, x.norm_m1 AS norm_m1, x.norm_m2 AS norm_m2, CAST(x.items.0 AS String) AS pw_key, CAST(Yson::ConvertToDouble(x.items.1) AS Double) AS pw_val
+    FROM (SELECT m.is_mapped AS is_mapped, m.norm_m1 AS norm_m1, m.norm_m2 AS norm_m2, DictItems(Yson::ConvertToDict(m.pw_m1)) AS items FROM $all_mapped AS m WHERE m.pw_m1 IS NOT NULL AND NOT Yson::IsList(m.pw_m1)) AS x FLATTEN BY (items)
 );
 $pw_m1_agg = (SELECT is_mapped, norm_m1, norm_m2, pw_key, AVG(pw_val) AS avg_val FROM $pw_m1_flat GROUP BY is_mapped, norm_m1, norm_m2, pw_key);
 $pw_m1_final = (SELECT k.is_mapped AS is_mapped, k.norm_m1 AS norm_m1, k.norm_m2 AS norm_m2, Yson::From(ToDict(AGGREGATE_LIST(AsTuple(k.pw_key, $round2(k.avg_val))))) AS pointwise_model_1_avg FROM $pw_m1_agg AS k GROUP BY k.is_mapped, k.norm_m1, k.norm_m2);
 
 $pw_m2_flat = (
-    SELECT * FROM (
-        SELECT x.is_mapped AS is_mapped, x.norm_m1 AS norm_m1, x.norm_m2 AS norm_m2, CAST(x.items.0 AS String) AS pw_key, CAST(Yson::ConvertToDouble(x.items.1) AS Double) AS pw_val
-        FROM (SELECT m.is_mapped AS is_mapped, m.norm_m1 AS norm_m1, m.norm_m2 AS norm_m2, DictItems(Yson::ConvertToDict(m.pw_m2)) AS items FROM $all_mapped AS m WHERE m.pw_m2 IS NOT NULL AND NOT Yson::IsList(m.pw_m2)) AS x FLATTEN BY (items)
-    )
-    UNION ALL
-    SELECT is_mapped, norm_m1, norm_m2, "overall" AS pw_key, pw_overall_m2 AS pw_val FROM $all_mapped WHERE pw_overall_m2 IS NOT NULL
+    SELECT x.is_mapped AS is_mapped, x.norm_m1 AS norm_m1, x.norm_m2 AS norm_m2, CAST(x.items.0 AS String) AS pw_key, CAST(Yson::ConvertToDouble(x.items.1) AS Double) AS pw_val
+    FROM (SELECT m.is_mapped AS is_mapped, m.norm_m1 AS norm_m1, m.norm_m2 AS norm_m2, DictItems(Yson::ConvertToDict(m.pw_m2)) AS items FROM $all_mapped AS m WHERE m.pw_m2 IS NOT NULL AND NOT Yson::IsList(m.pw_m2)) AS x FLATTEN BY (items)
 );
 $pw_m2_agg = (SELECT is_mapped, norm_m1, norm_m2, pw_key, AVG(pw_val) AS avg_val FROM $pw_m2_flat GROUP BY is_mapped, norm_m1, norm_m2, pw_key);
 $pw_m2_final = (SELECT k.is_mapped AS is_mapped, k.norm_m1 AS norm_m1, k.norm_m2 AS norm_m2, Yson::From(ToDict(AGGREGATE_LIST(AsTuple(k.pw_key, $round2(k.avg_val))))) AS pointwise_model_2_avg FROM $pw_m2_agg AS k GROUP BY k.is_mapped, k.norm_m1, k.norm_m2);

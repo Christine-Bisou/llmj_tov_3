@@ -171,6 +171,9 @@ $prep = (
         real_source_B,
         rownum,
         assignment_ids,
+        -- Сырые метаданные идут дальше блобом: в metadata.models лежит прогон,
+        -- по нему метрики раскладывают пару на model_1/model_2.
+        metadata,
         markers,
         annotations,
         checkboxes,
@@ -223,6 +226,19 @@ $input4_prep = (
         Just(input_render_data) AS input_render_data
     FROM $input4
     WHERE $str_yson(input_meta.instruct_id) != ""
+);
+
+-- Тот же вход, свёрнутый до строки на задание: плоский выход тоже несёт эти
+-- колонки, и без свёртки LEFT JOIN размножил бы агрегат.
+$input4_map = (
+    SELECT
+        group_key,
+        SOME(answers) AS answers,
+        SOME(input_final_messages) AS input_final_messages,
+        SOME(input_meta) AS input_meta,
+        SOME(input_render_data) AS input_render_data
+    FROM $input4_prep
+    GROUP BY group_key
 );
 -- ==========================================================
 -- СБОРКА AGG СТАРОЙ МАТЕМАТИКОЙ
@@ -742,6 +758,7 @@ $metadata_rows = (
         SOME(annotations) AS annotations,
         SOME(checkboxes) AS checkboxes,
         SOME(markup_metadata) AS markup_metadata,
+        SOME(metadata) AS metadata,
         SOME(task_id) AS task_id,
         SOME(worker_ids) AS worker_ids,
         SOME(pool_id) AS pool_id,
@@ -875,7 +892,13 @@ $result_markup = (
         COALESCE(m.markers, $empty_list) AS markers,
         COALESCE(m.checkboxes, $empty_dict) AS checkboxes,
         COALESCE(m.markup_metadata, $empty_dict) AS markup_metadata,
+        m.metadata AS metadata,
         i2.task_summarization AS task_summarization,
+
+        i4.answers AS answers,
+        i4.input_final_messages AS input_final_messages,
+        i4.input_meta AS input_meta,
+        i4.input_render_data AS input_render_data,
 
         Just(Yson::From(ToDict(AsList(
             AsTuple("answer_A", Just(Yson::From(m.answer_A))),
@@ -995,6 +1018,8 @@ $result_markup = (
         ON m.group_key = pwB.group_key
     LEFT JOIN $input2_map AS i2
         ON m.group_key = i2.group_key
+    LEFT JOIN $input4_map AS i4
+        ON m.group_key = i4.group_key
     LEFT JOIN $raw_outputs_agg AS roa
         ON m.group_key = roa.group_key
 );
@@ -1041,7 +1066,13 @@ SELECT
     rm.markers AS markers,
     rm.checkboxes AS checkboxes,
     rm.markup_metadata AS markup_metadata,
-    rm.task_summarization AS task_summarization
+    rm.metadata AS metadata,
+    rm.task_summarization AS task_summarization,
+
+    rm.answers AS answers,
+    rm.input_final_messages AS input_final_messages,
+    rm.input_meta AS input_meta,
+    rm.input_render_data AS input_render_data
 FROM $result_markup AS rm;
 
 -- ==========================================================

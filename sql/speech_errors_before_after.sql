@@ -8,13 +8,17 @@ DECLARE $input1 AS String;   -- прогон «вначале»
 DECLARE $input2 AS String;   -- прогон «потом»
 DECLARE $output1 AS String;  -- сколько речевых ошибок в A и в B, вначале и потом
 
--- Джойн по input_meta целиком.
+-- Джойн по паре input_meta + input_final_messages целиком.
 -- Речевые ошибки — agg_tov_markup.checkboxes_A / checkboxes_B -> tov_minus_language_errors.
 
--- Yson нельзя сравнивать напрямую, поэтому ключ — текстовое представление input_meta.
--- если input_meta — обычная строка, а не Yson: RETURN $meta ?? '';
-$key = ($meta) -> {
-    RETURN CAST(Yson::SerializeText($meta) AS String) ?? '';
+-- Yson нельзя сравнивать напрямую, поэтому ключ — текстовое представление колонки.
+-- если колонка — обычная строка, а не Yson: RETURN $v ?? '';
+$txt = ($v) -> {
+    RETURN CAST(Yson::SerializeText($v) AS String) ?? '';
+};
+
+$key = ($meta, $msgs) -> {
+    RETURN $txt($meta) || '\t' || $txt($msgs);
 };
 
 $le = ($agg, $side) -> {
@@ -25,17 +29,17 @@ $le = ($agg, $side) -> {
 
 $a = (
     SELECT
-        $key(input_meta)                    AS meta_key,
-        $le(agg_tov_markup, 'checkboxes_A') AS le_A,
-        $le(agg_tov_markup, 'checkboxes_B') AS le_B
+        $key(input_meta, input_final_messages) AS meta_key,
+        $le(agg_tov_markup, 'checkboxes_A')    AS le_A,
+        $le(agg_tov_markup, 'checkboxes_B')    AS le_B
     FROM $input1
 );
 
 $b = (
     SELECT
-        $key(input_meta)                    AS meta_key,
-        $le(agg_tov_markup, 'checkboxes_A') AS le_A,
-        $le(agg_tov_markup, 'checkboxes_B') AS le_B
+        $key(input_meta, input_final_messages) AS meta_key,
+        $le(agg_tov_markup, 'checkboxes_A')    AS le_A,
+        $le(agg_tov_markup, 'checkboxes_B')    AS le_B
     FROM $input2
 );
 

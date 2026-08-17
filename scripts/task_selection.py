@@ -40,9 +40,6 @@ CORE_BUCKETS = ("Alice", "Neuro", "VLM", "Competitors")
 STAGE_FAMILIES = ("Neuro", "VLM")
 STAGES = ("learn", "validate")
 
-# Сколько редакторов должно быть у задачи, чтобы можно было агрегировать вердикт
-MIN_WORKERS_PER_TASK = 2
-MAX_WORKERS_PER_TASK = 3
 
 
 # =========================================================
@@ -581,12 +578,10 @@ def _build_tasks_catalog(tasks_df):
     grouped = tasks_df.groupby(["row_key", "poolId", "taskId"], sort=False)
 
     for (_, pool_id, task_id), g in grouped:
+        # Перекрытие не требуется: задача годится с любым числом редакторов,
+        # в том числе с одним
         worker_ids = sorted(set(g["worker_id"].astype(str).tolist()))
         worker_cnt = len(worker_ids)
-
-        # Нужно минимум 2 непустых вердикта, чтобы агрегировать задачу
-        if worker_cnt < MIN_WORKERS_PER_TASK or worker_cnt > MAX_WORKERS_PER_TASK:
-            continue
 
         all_sources = sorted(
             set(g["source_A"].astype(str).tolist()) | set(g["source_B"].astype(str).tolist())
@@ -1060,9 +1055,10 @@ def _register_selected_row(
 # =========================================================
 # ПОДГОТОВКА ВЫХОДА
 #
-# На выход:
-# - сырые accepted-строки выбранных задач
+# На выход отдаем по одной строке на задачу:
+# - первая accepted-строка задачи как носитель inputValues
 # - плюс агрегированная мета по задаче
+# - плюс список вердиктов всех редакторов этой задачи
 # =========================================================
 
 def _make_selected_tasks_rows(selected_df, raw_input_df):
@@ -1101,6 +1097,18 @@ def _make_selected_tasks_rows(selected_df, raw_input_df):
         raw_selected_df["row_key"].isin(meta_df["row_key"])
     ].copy()
 
+    raw_selected_df = raw_selected_df.sort_values("_raw_output_order", kind="stable")
+
+    # Вердикты всех редакторов задачи, чтобы ничего не потерять при схлопывании
+    worker_verdicts = (
+        raw_selected_df.groupby("row_key", sort=False)["worker_verdict"]
+        .apply(lambda s: [str(v) for v in s.tolist()])
+        .to_dict()
+    )
+
+    # Одна строка на задачу
+    raw_selected_df = raw_selected_df.drop_duplicates(subset=["row_key"], keep="first").copy()
+
     merged = raw_selected_df.merge(
         meta_df,
         on="row_key",
@@ -1120,6 +1128,7 @@ def _make_selected_tasks_rows(selected_df, raw_input_df):
             if k not in {"row_key", "_raw_output_order", "worker_ids"}
         }
         row["worker_ids_json"] = list(r["worker_ids"]) if isinstance(r["worker_ids"], list) else _clean_value(r["worker_ids"])
+        row["worker_verdicts_json"] = list(worker_verdicts.get(r["row_key"], []))
         rows.append(row)
 
     return rows

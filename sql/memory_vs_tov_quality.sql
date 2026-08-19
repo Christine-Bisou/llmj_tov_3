@@ -6,6 +6,7 @@ PRAGMA yt.InferSchema = '1';
 
 DECLARE $input1 AS String;
 DECLARE $output1 AS String;
+DECLARE $output2 AS String;
 
 -- Вход: склеенная таблица с колонками
 --   has_memory_A / has_memory_B              — судья упомянул память
@@ -15,14 +16,9 @@ DECLARE $output1 AS String;
 --
 -- Предсказание: has_memory_A OR has_memory_B. Правда: tov_flag = "да".
 --
--- Выход — одна длинная таблица, разделы в колонке section:
---   quality      — rows / TP / FP / FN / TN / precision / recall / f1 / accuracy
---   tov_marker   — сколько раз встретилась причина в tov_markers (value — доля строк с флагом)
---   judge_marker — сколько раз судья назвал маркер (value — доля строк, где он что-то назвал)
---   pair         — пересечение причины и маркера судьи (value — доля внутри своей причины)
---
--- В разделе pair строка с двумя причинами и двумя маркерами даёт четыре пары:
--- это кросс-таблица, а не соответствие один-к-одному.
+-- output1 — одна строка: precision, recall, f1 и числа, из которых они сложились.
+-- output2 — сочетания причин и маркеров судьи с частотой:
+--           tov_markers | judge_markers | cnt | share
 
 -- ===================== разбор строк =====================
 
@@ -42,6 +38,16 @@ $strip_pass = ($m) -> {
     RETURN IF(String::Contains($m, '.'), ListLast(String::SplitToList($m, '.')), $m);
 };
 
+-- Список -> строка через запятую. Сортировка и дедуп, чтобы "A, B" и "B, A"
+-- считались одним сочетанием, а не двумя.
+$join = ($lst, $empty) -> {
+    RETURN IF(
+        ListLength($lst) > 0,
+        String::JoinFromList(ListSort(ListUniq($lst)), ', '),
+        $empty
+    );
+};
+
 $lower = ($v) -> {
     RETURN CAST(Unicode::ToLower(CAST(String::Strip(COALESCE(CAST($v AS String), '')) AS Utf8)) AS String);
 };
@@ -55,14 +61,14 @@ $rows = (
         -- Yson::ConvertToStringList(t.tov_markers)
         $split(t.tov_markers)                                               AS tov_list,
 
-        ListSort(ListUniq(ListMap(
+        ListMap(
             ListExtend($split(t.memory_markers_A_str), $split(t.memory_markers_B_str)),
             $strip_pass
-        )))                                                                 AS judge_list
+        )                                                                   AS judge_list
     FROM $input1 AS t
 );
 
--- ===================== раздел quality =====================
+-- ===================== ВЫХОД 1: качество =====================
 
 $conf = (
     SELECT
@@ -74,7 +80,7 @@ $conf = (
     FROM $rows
 );
 
-$metrics = (
+$with_pr = (
     SELECT
         c.*,
         IF(c.tp + c.fp > 0, 1.0 * c.tp / (c.tp + c.fp), 0.0) AS prec,
@@ -82,127 +88,40 @@ $metrics = (
     FROM $conf AS c
 );
 
-$quality = (
-    SELECT
-        'quality' AS section,
-        m.name    AS name_1,
-        ''        AS name_2,
-        m.cnt     AS cnt,
-        m.val     AS value
-    FROM (
-        SELECT AsList(
-            AsStruct('rows'      AS name, rows_total AS cnt, CAST(rows_total AS Double) AS val),
-            AsStruct('TP'        AS name, tp         AS cnt, CAST(tp AS Double)         AS val),
-            AsStruct('FP'        AS name, fp         AS cnt, CAST(fp AS Double)         AS val),
-            AsStruct('FN'        AS name, fn         AS cnt, CAST(fn AS Double)         AS val),
-            AsStruct('TN'        AS name, tn         AS cnt, CAST(tn AS Double)         AS val),
-            AsStruct('precision' AS name, 0L         AS cnt, prec                       AS val),
-            AsStruct('recall'    AS name, 0L         AS cnt, rec                        AS val),
-            AsStruct('f1'        AS name, 0L         AS cnt,
-                     IF(prec + rec > 0, 2.0 * prec * rec / (prec + rec), 0.0)           AS val),
-            AsStruct('accuracy'  AS name, 0L         AS cnt,
-                     IF(rows_total > 0, 1.0 * (tp + tn) / rows_total, 0.0)              AS val)
-        ) AS metrics
-        FROM $metrics
-    )
-    FLATTEN LIST BY (metrics AS m)
-);
+INSERT INTO $output1 WITH TRUNCATE
+SELECT
+    m.prec                                                              AS `precision`,
+    m.rec                                                               AS recall,
+    IF(m.prec + m.rec > 0, 2.0 * m.prec * m.rec / (m.prec + m.rec), 0.0) AS f1,
 
--- ===================== разделы с маркерами =====================
+    m.rows_total                                                        AS rows_total,
+    m.tp                                                                AS tp,
+    m.fp                                                                AS fp,
+    m.fn                                                                AS fn,
+    m.tn                                                                AS tn,
+    IF(m.rows_total > 0, 1.0 * (m.tp + m.tn) / m.rows_total, 0.0)       AS accuracy
+FROM $with_pr AS m;
 
--- Строки, где хоть одна сторона что-то нашла. Пустую сторону подписываем явно,
--- иначе FN и FP просто исчезнут из кросс-таблицы.
-$marked = (
+-- ===================== ВЫХОД 2: сочетания =====================
+
+-- Строки, где хоть одна сторона что-то нашла: пары «пусто / пусто» (TN) не нужны.
+-- Убери WHERE, если хочешь видеть и их.
+$combos = (
     SELECT
-        IF(ListLength(tov_list)   > 0, tov_list,   AsList('(пусто в tov_markers)'))  AS tov_list,
-        IF(ListLength(judge_list) > 0, judge_list, AsList('(судья не назвал)'))      AS judge_list
+        $join(tov_list, '(пусто)')   AS tov_markers,
+        $join(judge_list, '(пусто)') AS judge_markers
     FROM $rows
     WHERE gold OR pred
 );
 
--- Скаляр: сколько всего строк ушло в разбор маркеров.
-$marked_total = (SELECT CAST(COUNT(*) AS Int64) FROM $marked);
+$combos_total = (SELECT CAST(COUNT(*) AS Int64) FROM $combos);
 
-$tov_dist = (
-    SELECT
-        'tov_marker'                                                        AS section,
-        tov_marker                                                          AS name_1,
-        ''                                                                  AS name_2,
-        CAST(COUNT(*) AS Int64)                                             AS cnt,
-        IF($marked_total > 0, 1.0 * COUNT(*) / $marked_total, 0.0)          AS value
-    FROM $marked
-    FLATTEN LIST BY (tov_list AS tov_marker)
-    GROUP BY tov_marker
-);
-
-$judge_dist = (
-    SELECT
-        'judge_marker'                                                      AS section,
-        judge_marker                                                        AS name_1,
-        ''                                                                  AS name_2,
-        CAST(COUNT(*) AS Int64)                                             AS cnt,
-        IF($marked_total > 0, 1.0 * COUNT(*) / $marked_total, 0.0)          AS value
-    FROM $marked
-    FLATTEN LIST BY (judge_list AS judge_marker)
-    GROUP BY judge_marker
-);
-
--- Кросс-таблица: два FLATTEN подряд, потому что один FLATTEN по двум колонкам
--- склеил бы списки попарно, а нужны все сочетания.
-$e1 = (
-    SELECT tov_marker AS tov_marker, judge_list AS judge_list
-    FROM $marked
-    FLATTEN LIST BY (tov_list AS tov_marker)
-);
-
-$e2 = (
-    SELECT tov_marker AS tov_marker, judge_marker AS judge_marker
-    FROM $e1
-    FLATTEN LIST BY (judge_list AS judge_marker)
-);
-
-$pair_cnt = (
-    SELECT tov_marker AS tov_marker, judge_marker AS judge_marker, CAST(COUNT(*) AS Int64) AS cnt
-    FROM $e2
-    GROUP BY tov_marker, judge_marker
-);
-
-$tov_tot = (
-    SELECT tov_marker AS tov_marker, CAST(COUNT(*) AS Int64) AS total
-    FROM $e2
-    GROUP BY tov_marker
-);
-
-$pairs = (
-    SELECT
-        'pair'                       AS section,
-        p.tov_marker                 AS name_1,
-        p.judge_marker               AS name_2,
-        p.cnt                        AS cnt,
-        1.0 * p.cnt / t.total        AS value
-    FROM $pair_cnt AS p
-    INNER JOIN $tov_tot AS t
-    ON p.tov_marker = t.tov_marker
-);
-
--- ===================== выход =====================
-
-$all = (
-    SELECT section, name_1, name_2, cnt, value FROM $quality
-    UNION ALL
-    SELECT section, name_1, name_2, cnt, value FROM $tov_dist
-    UNION ALL
-    SELECT section, name_1, name_2, cnt, value FROM $judge_dist
-    UNION ALL
-    SELECT section, name_1, name_2, cnt, value FROM $pairs
-);
-
-INSERT INTO $output1 WITH TRUNCATE
+INSERT INTO $output2 WITH TRUNCATE
 SELECT
-    section,
-    name_1,
-    name_2,
-    cnt,
-    value
-FROM $all
-ORDER BY section, cnt DESC, name_1, name_2;
+    tov_markers                                                        AS tov_markers,
+    judge_markers                                                      AS judge_markers,
+    CAST(COUNT(*) AS Int64)                                            AS cnt,
+    IF($combos_total > 0, 1.0 * COUNT(*) / $combos_total, 0.0)         AS share
+FROM $combos
+GROUP BY tov_markers, judge_markers
+ORDER BY cnt DESC, tov_markers, judge_markers;

@@ -17,8 +17,9 @@ DECLARE $output1 AS String;
 -- и один проход, и другие имена ключей верхнего уровня.
 -- Текст в кавычках («…», "…", `…`) выкидывается до поиска: там судья цитирует
 -- ответ модели, и слово «память» в цитате упоминанием памяти не считается.
--- Значение самого маркера (is_present true/false, score) на поиск не влияет:
--- читаются ризонинги всех маркеров. Переключается флагом _ONLY_ACTIVE в UDF.
+-- Маркер попадает в выдачу, только если он сработал: is_present == true И в его
+-- тексте (explanation / reasoning) есть память. Переключается флагом
+-- _REQUIRE_IS_PRESENT в UDF.
 --
 -- Выход (по 3 колонки на ответ):
 --   has_memory_A / has_memory_B          — Bool: память упомянута хоть в одном reasoning
@@ -61,13 +62,10 @@ _QUOTED_RE = re.compile(
     re.S
 )
 
-# Смотреть ли только на сработавшие маркеры.
-# False (по умолчанию) — ризонинг читается у всех маркеров подряд: судья пишет
-#   обоснование и когда ставит true, и когда ставит false, память может всплыть
-#   в любом из них.
-# True — маркеры с явным false пропускаются. Маркеры без булева флага (например
-#   аспекты со score) остаются в любом случае: у них нет состояния «не сработал».
-_ONLY_ACTIVE = False
+# Считаем только сработавшие маркеры: is_present == true И память в тексте.
+# Маркеры с is_present: false и маркеры без этого флага (аспекты со score)
+# пропускаются. Поставь False, чтобы читать ризонинги всех маркеров подряд.
+_REQUIRE_IS_PRESENT = True
 
 # Под каким ключом внутри маркера лежит булев флаг. В этом пайплайне — is_present.
 _FLAG_KEYS = ('is_present', 'present', 'triggered', 'is_on', 'value', 'flag')
@@ -144,7 +142,7 @@ def _hits(review):
 
     names = []
     for name, value in markers.items():
-        if _ONLY_ACTIVE and _is_on(value) is False:
+        if _REQUIRE_IS_PRESENT and _is_on(value) is not True:
             continue
         if any(_has_memory(t) for t in _strings(value, [])):
             names.append(str(name))

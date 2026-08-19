@@ -240,8 +240,12 @@ $evidence = ($mem, $side) -> { RETURN $list($mem, $side, 'evidence'); };
 $scanned = (
     SELECT
         t.*,
-        -- raw_tov лежит как Yson/Json: сериализуем в текст и отдаём в UDF.
-        -- Если в твоей таблице это обычная строка, замени на CAST(t.raw_tov AS Utf8).
+        -- ЕДИНСТВЕННОЕ МЕСТО, ГДЕ НАЗВАНА КОЛОНКА С ОТВЕТОМ СУДЬИ.
+        -- Ошибка "Member not found: raw_tov" значит, что в этой таблице колонка
+        -- называется иначе — поменяй имя здесь. Посмотреть настоящее имя:
+        --   SELECT * FROM $input1 LIMIT 1;
+        -- Если колонка лежит обычной строкой, а не Yson/Json, то вместо
+        -- Yson::SerializeJson(...) достаточно CAST(t.raw_tov AS Utf8).
         Yson::ParseJson($memory_scan(CAST(Yson::SerializeJson(t.raw_tov) AS Utf8))) AS mem
     FROM $input1 AS t
 );

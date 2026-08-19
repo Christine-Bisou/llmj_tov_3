@@ -158,9 +158,9 @@ $markers = ($mem, $side) -> {
 $scanned = (
     SELECT
         t.*,
-        -- если raw_tov хранится как Yson/Json, замени на:
-        -- CAST(Yson::SerializeJson(Yson::From(t.raw_tov)) AS Utf8)
-        Yson::ParseJson($memory_scan(CAST(t.raw_tov AS Utf8))) AS mem
+        -- raw_tov лежит как Yson/Json: сериализуем в текст и отдаём в UDF.
+        -- Если в твоей таблице это обычная строка, замени на CAST(t.raw_tov AS Utf8).
+        Yson::ParseJson($memory_scan(CAST(Yson::SerializeJson(t.raw_tov) AS Utf8))) AS mem
     FROM $input1 AS t
 );
 

@@ -20,14 +20,13 @@ DECLARE $output1 AS String;
 -- Маркер попадает в выдачу, только если он сработал: is_present == true И в его
 -- тексте (explanation / reasoning) есть память. Переключается флагом
 -- _REQUIRE_IS_PRESENT в UDF.
--- Маркеры из _IGNORE_MARKERS (subjectivity) не считаются вовсе: если память
+-- Маркеры из _IGNORE_MARKERS (subjectivity) пропускаются вовсе: если память
 -- нашлась только в них, has_memory_A / has_memory_B будут false.
 --
--- Выход (по 4 колонки на ответ):
+-- Выход (по 3 колонки на ответ):
 --   has_memory_A / has_memory_B          — Bool: память упомянута хоть в одном reasoning
 --   memory_markers_A / memory_markers_B  — List<String>: маркеры, где она упомянута
 --   memory_markers_A_str / ..._B_str     — те же списки строкой, чтобы читалось в UI
---   memory_evidence_A / ..._B           — почему маркер попал: слово и кусок текста вокруг
 -- Если проходов больше одного, имя маркера идёт с префиксом прохода: "reverse.liveliness".
 
 $script = @@#py
@@ -74,11 +73,8 @@ _REQUIRE_IS_PRESENT = True
 _FLAG_KEYS = ('is_present', 'present', 'triggered', 'is_on', 'value', 'flag')
 
 # Маркеры, которые не считаются упоминанием памяти, даже если сработали и память
-# в тексте есть. Если память нашлась только в них — has_memory будет false.
+# в их тексте есть. Память только в них -> has_memory false, в списке пусто.
 _IGNORE_MARKERS = ('subjectivity',)
-
-# Сколько символов текста показывать вокруг найденного слова в колонке-объяснении.
-_EVIDENCE_PAD = 60
 
 _REVIEW_KEYS = ('review_A', 'review_B', 'review_a', 'review_b')
 
@@ -121,21 +117,11 @@ def _strings(node, acc):
     return acc
 
 
-def _memory_match(text):
-    """Первое совпадение вне цитат: (слово, кусок текста вокруг). Иначе None."""
+def _has_memory(text):
+    """Память упомянута вне цитат."""
     if _IGNORE_QUOTED:
         text = _QUOTED_RE.sub(' ', text)
-    m = _MEMORY_RE.search(text)
-    if m is None:
-        return None
-    left = max(0, m.start() - _EVIDENCE_PAD)
-    right = min(len(text), m.end() + _EVIDENCE_PAD)
-    around = ' '.join(text[left:right].split())
-    if left > 0:
-        around = '…' + around
-    if right < len(text):
-        around = around + '…'
-    return m.group(0), around
+    return bool(_MEMORY_RE.search(text))
 
 
 def _is_on(value):
@@ -153,25 +139,22 @@ def _is_on(value):
 
 
 def _hits(review):
-    """[(маркер, найденное слово, кусок текста вокруг)] для одного review."""
+    """Имена маркеров одного review, в reasoning которых есть память."""
     if not isinstance(review, dict):
         return []
     markers = review.get('markers')
     if not isinstance(markers, dict):
         return []
 
-    hits = []
+    names = []
     for name, value in markers.items():
         if str(name) in _IGNORE_MARKERS:
             continue
         if _REQUIRE_IS_PRESENT and _is_on(value) is not True:
             continue
-        for text in _strings(value, []):
-            found = _memory_match(text)
-            if found is not None:
-                hits.append((str(name), found[0], found[1]))
-                break
-    return hits
+        if any(_has_memory(t) for t in _strings(value, [])):
+            names.append(str(name))
+    return names
 
 
 def _passes(data):
@@ -197,8 +180,8 @@ def _passes(data):
 
 def memory_scan(raw: Optional[Utf8]) -> Optional[Utf8]:
     """raw_tov -> {"A": {"has": bool, "markers": [...]}, "B": {...}}"""
-    result = {'A': {'has': False, 'markers': [], 'evidence': []},
-              'B': {'has': False, 'markers': [], 'evidence': []}}
+    result = {'A': {'has': False, 'markers': []},
+              'B': {'has': False, 'markers': []}}
 
     data = _parse(raw)
     if data is None:
@@ -208,19 +191,18 @@ def memory_scan(raw: Optional[Utf8]) -> Optional[Utf8]:
     multi = len(passes) > 1
 
     for side in ('A', 'B'):
-        names, evidence, seen = [], [], set()
+        names, seen = [], set()
         for pass_name, block in passes:
             review = block.get('review_' + side)
             if review is None:
                 review = block.get('review_' + side.lower())
             prefix = (str(pass_name) + '.') if (multi and pass_name) else ''
-            for name, word, around in _hits(review):
+            for name in _hits(review):
                 full = prefix + name
                 if full not in seen:
                     seen.add(full)
                     names.append(full)
-                    evidence.append(full + ' [' + word + ']: ' + around)
-        result[side] = {'has': bool(names), 'markers': names, 'evidence': evidence}
+        result[side] = {'has': bool(names), 'markers': names}
 
     return json.dumps(result, ensure_ascii=False)
 @@;
@@ -228,24 +210,18 @@ def memory_scan(raw: Optional[Utf8]) -> Optional[Utf8]:
 $memory_scan = Python3::memory_scan($script);
 
 $has     = ($mem, $side) -> { RETURN Yson::ConvertToBool(Yson::Lookup(Yson::Lookup($mem, $side), 'has')) ?? false; };
-$list = ($mem, $side, $key) -> {
+$markers = ($mem, $side) -> {
     RETURN COALESCE(
-        Yson::ConvertToStringList(Yson::Lookup(Yson::Lookup($mem, $side), $key)),
+        Yson::ConvertToStringList(Yson::Lookup(Yson::Lookup($mem, $side), 'markers')),
         ListCreate(String)
     );
 };
-$markers  = ($mem, $side) -> { RETURN $list($mem, $side, 'markers'); };
-$evidence = ($mem, $side) -> { RETURN $list($mem, $side, 'evidence'); };
 
 $scanned = (
     SELECT
         t.*,
-        -- ЕДИНСТВЕННОЕ МЕСТО, ГДЕ НАЗВАНА КОЛОНКА С ОТВЕТОМ СУДЬИ.
-        -- Ошибка "Member not found: raw_tov" значит, что в этой таблице колонка
-        -- называется иначе — поменяй имя здесь. Посмотреть настоящее имя:
-        --   SELECT * FROM $input1 LIMIT 1;
-        -- Если колонка лежит обычной строкой, а не Yson/Json, то вместо
-        -- Yson::SerializeJson(...) достаточно CAST(t.raw_tov AS Utf8).
+        -- raw_tov лежит как Yson/Json: сериализуем в текст и отдаём в UDF.
+        -- Если в твоей таблице это обычная строка, замени на CAST(t.raw_tov AS Utf8).
         Yson::ParseJson($memory_scan(CAST(Yson::SerializeJson(t.raw_tov) AS Utf8))) AS mem
     FROM $input1 AS t
 );
@@ -255,12 +231,10 @@ SELECT
     $has(s.mem, 'A')                                     AS has_memory_A,
     $markers(s.mem, 'A')                                 AS memory_markers_A,
     String::JoinFromList($markers(s.mem, 'A'), ', ')     AS memory_markers_A_str,
-    String::JoinFromList($evidence(s.mem, 'A'), ' | ')   AS memory_evidence_A,
 
     $has(s.mem, 'B')                                     AS has_memory_B,
     $markers(s.mem, 'B')                                 AS memory_markers_B,
     String::JoinFromList($markers(s.mem, 'B'), ', ')     AS memory_markers_B_str,
-    String::JoinFromList($evidence(s.mem, 'B'), ' | ')   AS memory_evidence_B,
 
     s.*
     WITHOUT IF EXISTS s.mem

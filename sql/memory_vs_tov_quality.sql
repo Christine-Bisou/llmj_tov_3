@@ -119,7 +119,6 @@ $with_pr = (
     FROM $conf AS c
 );
 
-INSERT INTO $output1 WITH TRUNCATE
 SELECT
     m.prec                                                              AS `precision`,
     m.rec                                                               AS recall,
@@ -133,7 +132,7 @@ SELECT
     IF(m.rows_total > 0, 1.0 * (m.tp + m.tn) / m.rows_total, 0.0)       AS accuracy
 FROM $with_pr AS m;
 
--- ===================== ВЫХОД 2: пары «причина — маркер» =====================
+-- ===================== ВЫХОД 2: причина -> маркеры судьи =====================
 
 -- Сначала вынимаем известные названия целиком, остаток режем по запятой:
 -- так название с запятой внутри остаётся целым, а незнакомое всё равно видно.
@@ -158,8 +157,8 @@ $pairs_src = (
         END                                                          AS judge_list
     FROM (
         SELECT
-            $parse_tov(tov_raw)                                                                  AS tov_parsed,
-            judge_list                                                                           AS judge_all,
+            $parse_tov(tov_raw)                                                                      AS tov_parsed,
+            judge_list                                                                               AS judge_all,
             ListSort(ListUniq(ListFilter(judge_list, ($m) -> { RETURN ListHas($judge_keep, $m); }))) AS judge_kept
         FROM $rows
         WHERE gold OR pred
@@ -193,7 +192,16 @@ $pair_cnt = (
     GROUP BY tov_marker, judge_marker
 );
 
--- "template_phrases: 72%, boundaries_violation: 10%, (не нашёл): 14%"
+$grouped = (
+    SELECT
+        tov_marker                                 AS tov_marker,
+        CAST(SUM(cnt) AS Int64)                    AS marks_total,
+        AGGREGATE_LIST(AsTuple(cnt, judge_marker)) AS items
+    FROM $pair_cnt
+    GROUP BY tov_marker
+);
+
+-- "template_phrases: 72%, (не нашёл): 14%, boundaries_violation: 10%"
 $fmt_dict = ($items, $total) -> {
     RETURN String::JoinFromList(
         ListMap(
@@ -215,24 +223,15 @@ $share_of = ($items, $total, $name) -> {
     )), 0L) / $total;
 };
 
-$grouped = (
-    SELECT
-        tov_marker                                          AS tov_marker,
-        CAST(SUM(cnt) AS Int64)                             AS marks_total,
-        AGGREGATE_LIST(AsTuple(cnt, judge_marker))          AS items
-    FROM $pair_cnt
-    GROUP BY tov_marker
-);
-
 -- Сортировка по возрастанию tov_marker: она не требует служебной колонки,
 -- в отличие от ORDER BY ... DESC, который добавлял _yql_column_0.
 INSERT INTO $output2 WITH TRUNCATE
 SELECT
-    g.tov_marker                                        AS tov_marker,
-    r.rows_cnt                                          AS rows_cnt,
-    g.marks_total                                       AS marks_total,
-    $fmt_dict(g.items, g.marks_total)                   AS judge_dict,
-    $share_of(g.items, g.marks_total, '(не нашёл)')     AS share_not_found,
+    g.tov_marker                                         AS tov_marker,
+    r.rows_cnt                                           AS rows_cnt,
+    g.marks_total                                        AS marks_total,
+    $fmt_dict(g.items, g.marks_total)                    AS judge_dict,
+    $share_of(g.items, g.marks_total, '(не нашёл)')      AS share_not_found,
     $share_of(g.items, g.marks_total, '(другой маркер)') AS share_other
 FROM $grouped AS g
 INNER JOIN $tov_rows AS r

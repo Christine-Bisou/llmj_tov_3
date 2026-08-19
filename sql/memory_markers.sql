@@ -5,9 +5,13 @@ PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '1';
 
 DECLARE $input1 AS String;
+DECLARE $input2 AS String;
 DECLARE $output1 AS String;
 
 -- Ищем упоминания памяти в reasoning'ах маркеров судьи.
+-- input1 — основная таблица, ключ в колонке instruct_id. Все её колонки
+--          доезжают до выхода как есть.
+-- input2 — таблица с raw_tov, ключ в input_meta.instruct_id.
 -- Вход: колонка raw_tov с JSON вида
 --   { "direct": { "review_A": { "markers": { "<маркер>": { "reasoning": "...", "score": N } }, ... },
 --                 "review_B": { ... }, "winner": ..., "winner_reasoning": ... },
@@ -217,13 +221,31 @@ $markers = ($mem, $side) -> {
     );
 };
 
+-- Ключ из input_meta. AutoConvert приводит и число, и строку; COALESCE — страховка.
+$meta_iid = ($m) -> {
+    RETURN COALESCE(
+        Yson::LookupString($m, 'instruct_id'),
+        CAST(Yson::LookupInt64($m, 'instruct_id') AS String)
+    );
+};
+
+-- ЕДИНСТВЕННОЕ МЕСТО, ГДЕ НАЗВАН raw_tov. "Member not found" — правится здесь.
+-- Если raw_tov лежит обычной строкой, а не Yson/Json:
+--   CAST(t.raw_tov AS Utf8)
+$judge = (
+    SELECT
+        $meta_iid(t.input_meta)                                     AS join_id,
+        CAST(Yson::SerializeJson(t.raw_tov) AS Utf8)                AS raw_text
+    FROM $input2 AS t
+);
+
 $scanned = (
     SELECT
-        t.*,
-        -- raw_tov лежит как Yson/Json: сериализуем в текст и отдаём в UDF.
-        -- Если в твоей таблице это обычная строка, замени на CAST(t.raw_tov AS Utf8).
-        Yson::ParseJson($memory_scan(CAST(Yson::SerializeJson(t.raw_tov) AS Utf8))) AS mem
-    FROM $input1 AS t
+        b.*,
+        Yson::ParseJson($memory_scan(j.raw_text)) AS mem
+    FROM (SELECT CAST(t.instruct_id AS String) AS join_id, t.* FROM $input1 AS t) AS b
+    LEFT JOIN $judge AS j
+    ON b.join_id = j.join_id
 );
 
 INSERT INTO $output1 WITH TRUNCATE
@@ -237,5 +259,5 @@ SELECT
     String::JoinFromList($markers(s.mem, 'B'), ', ')     AS memory_markers_B_str,
 
     s.*
-    WITHOUT IF EXISTS s.mem
+    WITHOUT IF EXISTS s.mem, s.join_id
 FROM $scanned AS s;

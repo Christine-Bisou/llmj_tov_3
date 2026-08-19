@@ -17,8 +17,9 @@ DECLARE $output2 AS String;
 -- Предсказание: has_memory_A OR has_memory_B. Правда: tov_flag = "да".
 --
 -- output1 — одна строка: precision, recall, f1 и числа, из которых они сложились.
--- output2 — сочетания причин и маркеров судьи с частотой:
---           tov_markers | judge_markers | cnt | share
+-- output2 — по одной паре на строку: одна причина против одного маркера судьи,
+--           tov_marker | judge_marker | cnt | tov_total | share_in_tov
+--           Маркеры судьи отфильтрованы списком $judge_keep.
 
 -- ===================== разбор строк =====================
 
@@ -38,16 +39,6 @@ $strip_pass = ($m) -> {
     RETURN IF(String::Contains($m, '.'), ListLast(String::SplitToList($m, '.')), $m);
 };
 
--- Список -> строка через запятую. Сортировка и дедуп, чтобы "A, B" и "B, A"
--- считались одним сочетанием, а не двумя.
-$join = ($lst, $empty) -> {
-    RETURN IF(
-        ListLength($lst) > 0,
-        String::JoinFromList(ListSort(ListUniq($lst)), ', '),
-        $empty
-    );
-};
-
 $lower = ($v) -> {
     RETURN CAST(Unicode::ToLower(CAST(String::Strip(COALESCE(CAST($v AS String), '')) AS Utf8)) AS String);
 };
@@ -58,8 +49,8 @@ $rows = (
         COALESCE(t.has_memory_A, false) OR COALESCE(t.has_memory_B, false)  AS pred,
 
         -- если tov_markers лежит списком (Yson), замени на:
-        -- Yson::ConvertToStringList(t.tov_markers)
-        $split(t.tov_markers)                                               AS tov_list,
+        -- CAST(String::JoinFromList(Yson::ConvertToStringList(t.tov_markers), ', ') AS String)
+        COALESCE(CAST(t.tov_markers AS String), '')                         AS tov_raw,
 
         ListMap(
             ListExtend($split(t.memory_markers_A_str), $split(t.memory_markers_B_str)),
@@ -102,26 +93,87 @@ SELECT
     IF(m.rows_total > 0, 1.0 * (m.tp + m.tn) / m.rows_total, 0.0)       AS accuracy
 FROM $with_pr AS m;
 
--- ===================== ВЫХОД 2: сочетания =====================
+-- ===================== ВЫХОД 2: пары «причина — маркер» =====================
 
--- Строки, где хоть одна сторона что-то нашла: пары «пусто / пусто» (TN) не нужны.
--- Убери WHERE, если хочешь видеть и их.
-$combos = (
-    SELECT
-        $join(tov_list, '(пусто)')   AS tov_markers,
-        $join(judge_list, '(пусто)') AS judge_markers
-    FROM $rows
-    WHERE gold OR pred
+-- Известные названия причин. Нужны потому, что «Сенситивная память по теме,
+-- но тяжеловесно» само содержит запятую: разбить строку просто по запятой
+-- нельзя, название развалится на два куска.
+-- Новое название разметки — дописать сюда.
+$tov_known = AsList(
+    'Сенситивная память по теме, но тяжеловесно',
+    'Машинная формулировка',
+    'Навязчивое повторение',
+    'Эффект досье',
+    'Запрещённые данные',
+    'Запрещенные данные'
 );
 
-$combos_total = (SELECT CAST(COUNT(*) AS Int64) FROM $combos);
+-- Маркеры судьи, которые интересны. Остальные (subjectivity и прочие) в выдачу
+-- не идут. Убрать/добавить — правится этот список.
+$judge_keep = AsList(
+    'template_phrases',
+    'boundaries_violation',
+    'stuffy_bureaucratic',
+    'bad_intro'
+);
 
+-- Сначала вынимаем известные названия целиком, остаток режем по запятой:
+-- так название с запятой внутри остаётся целым, а незнакомое всё равно видно.
+$parse_tov = ($s) -> {
+    $t = COALESCE(CAST($s AS String), '');
+    $found = ListFilter($tov_known, ($n) -> { RETURN String::Contains($t, $n); });
+    $rest  = ListFold($found, $t, ($n, $acc) -> { RETURN String::ReplaceAll($acc, $n, ' '); });
+    RETURN ListUniq(ListExtend($found, $split($rest)));
+};
+
+$pairs_src = (
+    SELECT
+        IF(ListLength(tov_parsed) > 0, tov_parsed, AsList('(пусто)'))          AS tov_list,
+        IF(ListLength(judge_kept) > 0, judge_kept, AsList('(нет из списка)'))  AS judge_list
+    FROM (
+        SELECT
+            $parse_tov(tov_raw)                                                     AS tov_parsed,
+            ListSort(ListUniq(ListFilter(judge_list, ($m) -> { RETURN ListHas($judge_keep, $m); }))) AS judge_kept
+        FROM $rows
+        WHERE gold OR pred
+    )
+);
+
+-- Два FLATTEN подряд: один FLATTEN по двум колонкам склеил бы списки попарно,
+-- а нужны все сочетания причина × маркер.
+$e1 = (
+    SELECT tov_marker AS tov_marker, judge_list AS judge_list
+    FROM $pairs_src
+    FLATTEN LIST BY (tov_list AS tov_marker)
+);
+
+$e2 = (
+    SELECT tov_marker AS tov_marker, judge_marker AS judge_marker
+    FROM $e1
+    FLATTEN LIST BY (judge_list AS judge_marker)
+);
+
+$pair_cnt = (
+    SELECT tov_marker AS tov_marker, judge_marker AS judge_marker, CAST(COUNT(*) AS Int64) AS cnt
+    FROM $e2
+    GROUP BY tov_marker, judge_marker
+);
+
+$tov_tot = (
+    SELECT tov_marker AS tov_marker, CAST(COUNT(*) AS Int64) AS total
+    FROM $e2
+    GROUP BY tov_marker
+);
+
+-- ORDER BY здесь намеренно нет: сортировка по убыванию при вставке в YT
+-- добавляет служебную колонку _yql_column_0. Сортируй в UI по cnt.
 INSERT INTO $output2 WITH TRUNCATE
 SELECT
-    tov_markers                                                        AS tov_markers,
-    judge_markers                                                      AS judge_markers,
-    CAST(COUNT(*) AS Int64)                                            AS cnt,
-    IF($combos_total > 0, 1.0 * COUNT(*) / $combos_total, 0.0)         AS share
-FROM $combos
-GROUP BY tov_markers, judge_markers
-ORDER BY cnt DESC, tov_markers, judge_markers;
+    p.tov_marker            AS tov_marker,
+    p.judge_marker          AS judge_marker,
+    p.cnt                   AS cnt,
+    t.total                 AS tov_total,
+    1.0 * p.cnt / t.total   AS share_in_tov
+FROM $pair_cnt AS p
+INNER JOIN $tov_tot AS t
+ON p.tov_marker = t.tov_marker;

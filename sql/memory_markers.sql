@@ -20,6 +20,8 @@ DECLARE $output1 AS String;
 -- Маркер попадает в выдачу, только если он сработал: is_present == true И в его
 -- тексте (explanation / reasoning) есть память. Переключается флагом
 -- _REQUIRE_IS_PRESENT в UDF.
+-- Маркеры из _IGNORE_MARKERS (subjectivity) не считаются вовсе: если память
+-- нашлась только в них, has_memory_A / has_memory_B будут false.
 --
 -- Выход (по 4 колонки на ответ):
 --   has_memory_A / has_memory_B          — Bool: память упомянута хоть в одном reasoning
@@ -70,6 +72,10 @@ _REQUIRE_IS_PRESENT = True
 
 # Под каким ключом внутри маркера лежит булев флаг. В этом пайплайне — is_present.
 _FLAG_KEYS = ('is_present', 'present', 'triggered', 'is_on', 'value', 'flag')
+
+# Маркеры, которые не считаются упоминанием памяти, даже если сработали и память
+# в тексте есть. Если память нашлась только в них — has_memory будет false.
+_IGNORE_MARKERS = ('subjectivity',)
 
 # Сколько символов текста показывать вокруг найденного слова в колонке-объяснении.
 _EVIDENCE_PAD = 60
@@ -156,6 +162,8 @@ def _hits(review):
 
     hits = []
     for name, value in markers.items():
+        if str(name) in _IGNORE_MARKERS:
+            continue
         if _REQUIRE_IS_PRESENT and _is_on(value) is not True:
             continue
         for text in _strings(value, []):

@@ -14,12 +14,43 @@ DECLARE $output2 AS String;
 --   tov_flag                                 — разметка: "да" / "нет"
 --   tov_markers                              — "Навязчивое повторение, Машинная формулировка"
 --
--- Предсказание: has_memory_A OR has_memory_B. Правда: tov_flag = "да".
+-- Предсказание: судья упомянул память хоть в одном маркере, кроме тех, что
+-- перечислены в $judge_ignore (subjectivity). Правда: tov_flag = "да".
 --
 -- output1 — одна строка: precision, recall, f1 и числа, из которых они сложились.
 -- output2 — по одной паре на строку: одна причина против одного маркера судьи,
 --           tov_marker | judge_marker | cnt | tov_total | share_in_tov
 --           Маркеры судьи отфильтрованы списком $judge_keep.
+
+-- ===================== списки маркеров =====================
+
+-- Известные названия причин. Нужны потому, что «Сенситивная память по теме,
+-- но тяжеловесно» само содержит запятую: разбить строку просто по запятой
+-- нельзя, название развалится на два куска.
+-- Новое название разметки — дописать сюда.
+$tov_known = AsList(
+    'Сенситивная память по теме, но тяжеловесно',
+    'Машинная формулировка',
+    'Навязчивое повторение',
+    'Эффект досье',
+    'Запрещённые данные',
+    'Запрещенные данные'
+);
+
+-- Маркеры судьи, которые вообще не считаются упоминанием памяти.
+-- Если память нашлась только в них — строка идёт как «памяти нет»,
+-- и на precision/recall она не влияет.
+$judge_ignore = AsList(
+    'subjectivity'
+);
+
+-- Маркеры судьи, которые интересны в разрезе причин (ВЫХОД 2).
+$judge_keep = AsList(
+    'template_phrases',
+    'boundaries_violation',
+    'stuffy_bureaucratic',
+    'bad_intro'
+);
 
 -- ===================== разбор строк =====================
 
@@ -43,19 +74,28 @@ $lower = ($v) -> {
     RETURN CAST(Unicode::ToLower(CAST(String::Strip(COALESCE(CAST($v AS String), '')) AS Utf8)) AS String);
 };
 
+-- Маркеры судьи обеих сторон в одном списке, без префикса прохода и без
+-- игнорируемых. has_memory_A / has_memory_B намеренно не используются:
+-- они не знают про $judge_ignore.
+$judge_of = ($a, $b) -> {
+    RETURN ListUniq(ListFilter(
+        ListMap(ListExtend($split($a), $split($b)), $strip_pass),
+        ($m) -> { RETURN NOT ListHas($judge_ignore, $m); }
+    ));
+};
+
 $rows = (
     SELECT
         $lower(t.tov_flag) IN ('да', 'yes', 'true', '1')                    AS gold,
-        COALESCE(t.has_memory_A, false) OR COALESCE(t.has_memory_B, false)  AS pred,
+
+        -- предсказание: остался хоть один маркер после отсева игнорируемых
+        ListLength($judge_of(t.memory_markers_A_str, t.memory_markers_B_str)) > 0 AS pred,
 
         -- если tov_markers лежит списком (Yson), замени на:
         -- CAST(String::JoinFromList(Yson::ConvertToStringList(t.tov_markers), ', ') AS String)
         COALESCE(CAST(t.tov_markers AS String), '')                         AS tov_raw,
 
-        ListMap(
-            ListExtend($split(t.memory_markers_A_str), $split(t.memory_markers_B_str)),
-            $strip_pass
-        )                                                                   AS judge_list
+        $judge_of(t.memory_markers_A_str, t.memory_markers_B_str)           AS judge_list
     FROM $input1 AS t
 );
 
@@ -94,28 +134,6 @@ SELECT
 FROM $with_pr AS m;
 
 -- ===================== ВЫХОД 2: пары «причина — маркер» =====================
-
--- Известные названия причин. Нужны потому, что «Сенситивная память по теме,
--- но тяжеловесно» само содержит запятую: разбить строку просто по запятой
--- нельзя, название развалится на два куска.
--- Новое название разметки — дописать сюда.
-$tov_known = AsList(
-    'Сенситивная память по теме, но тяжеловесно',
-    'Машинная формулировка',
-    'Навязчивое повторение',
-    'Эффект досье',
-    'Запрещённые данные',
-    'Запрещенные данные'
-);
-
--- Маркеры судьи, которые интересны. Остальные (subjectivity и прочие) в выдачу
--- не идут. Убрать/добавить — правится этот список.
-$judge_keep = AsList(
-    'template_phrases',
-    'boundaries_violation',
-    'stuffy_bureaucratic',
-    'bad_intro'
-);
 
 -- Сначала вынимаем известные названия целиком, остаток режем по запятой:
 -- так название с запятой внутри остаётся целым, а незнакомое всё равно видно.

@@ -18,9 +18,9 @@ DECLARE $output2 AS String;
 -- перечислены в $judge_ignore (subjectivity). Правда: tov_flag = "да".
 --
 -- output1 — одна строка: precision, recall, f1 и числа, из которых они сложились.
--- output2 — по одной паре на строку: одна причина против одного маркера судьи,
---           tov_marker | judge_marker | cnt | tov_total | share_in_tov
---           Маркеры судьи отфильтрованы списком $judge_keep.
+-- output2 — по одной строке на причину из tov_markers:
+--           tov_marker | rows_cnt | marks_total | judge_dict | share_not_found | share_other
+--           judge_dict — маркеры судьи с процентами, по убыванию частоты.
 
 -- ===================== списки маркеров =====================
 
@@ -144,13 +144,22 @@ $parse_tov = ($s) -> {
     RETURN ListUniq(ListExtend($found, $split($rest)));
 };
 
+-- Три случая различаются явно:
+--   имя маркера      — судья поставил маркер из $judge_keep
+--   (другой маркер)  — память нашёл, но маркер не из списка (например liveliness)
+--   (не нашёл)       — памяти не нашёл вовсе
 $pairs_src = (
     SELECT
-        IF(ListLength(tov_parsed) > 0, tov_parsed, AsList('(пусто)'))          AS tov_list,
-        IF(ListLength(judge_kept) > 0, judge_kept, AsList('(нет из списка)'))  AS judge_list
+        IF(ListLength(tov_parsed) > 0, tov_parsed, AsList('(пусто)')) AS tov_list,
+        CASE
+            WHEN ListLength(judge_kept) > 0 THEN judge_kept
+            WHEN ListLength(judge_all)  > 0 THEN AsList('(другой маркер)')
+            ELSE                                 AsList('(не нашёл)')
+        END                                                          AS judge_list
     FROM (
         SELECT
-            $parse_tov(tov_raw)                                                     AS tov_parsed,
+            $parse_tov(tov_raw)                                                                  AS tov_parsed,
+            judge_list                                                                           AS judge_all,
             ListSort(ListUniq(ListFilter(judge_list, ($m) -> { RETURN ListHas($judge_keep, $m); }))) AS judge_kept
         FROM $rows
         WHERE gold OR pred
@@ -171,27 +180,61 @@ $e2 = (
     FLATTEN LIST BY (judge_list AS judge_marker)
 );
 
+-- Сколько строк содержит эту причину (без размножения по маркерам судьи).
+$tov_rows = (
+    SELECT tov_marker AS tov_marker, CAST(COUNT(*) AS Int64) AS rows_cnt
+    FROM $e1
+    GROUP BY tov_marker
+);
+
 $pair_cnt = (
     SELECT tov_marker AS tov_marker, judge_marker AS judge_marker, CAST(COUNT(*) AS Int64) AS cnt
     FROM $e2
     GROUP BY tov_marker, judge_marker
 );
 
-$tov_tot = (
-    SELECT tov_marker AS tov_marker, CAST(COUNT(*) AS Int64) AS total
-    FROM $e2
+-- "template_phrases: 72%, boundaries_violation: 10%, (не нашёл): 14%"
+$fmt_dict = ($items, $total) -> {
+    RETURN String::JoinFromList(
+        ListMap(
+            ListSortDesc($items, ($x) -> { RETURN $x.0; }),
+            ($x) -> {
+                RETURN $x.1 || ': ' ||
+                       CAST(CAST(Math::Round(100.0 * $x.0 / $total, 0) AS Int64) AS String) || '%';
+            }
+        ),
+        ', '
+    );
+};
+
+-- ListSum по пустому списку даёт NULL, поэтому COALESCE снаружи.
+$share_of = ($items, $total, $name) -> {
+    RETURN 1.0 * COALESCE(ListSum(ListMap(
+        ListFilter($items, ($x) -> { RETURN $x.1 = $name; }),
+        ($x) -> { RETURN $x.0; }
+    )), 0L) / $total;
+};
+
+$grouped = (
+    SELECT
+        tov_marker                                          AS tov_marker,
+        CAST(SUM(cnt) AS Int64)                             AS marks_total,
+        AGGREGATE_LIST(AsTuple(cnt, judge_marker))          AS items
+    FROM $pair_cnt
     GROUP BY tov_marker
 );
 
--- ORDER BY здесь намеренно нет: сортировка по убыванию при вставке в YT
--- добавляет служебную колонку _yql_column_0. Сортируй в UI по cnt.
+-- Сортировка по возрастанию tov_marker: она не требует служебной колонки,
+-- в отличие от ORDER BY ... DESC, который добавлял _yql_column_0.
 INSERT INTO $output2 WITH TRUNCATE
 SELECT
-    p.tov_marker            AS tov_marker,
-    p.judge_marker          AS judge_marker,
-    p.cnt                   AS cnt,
-    t.total                 AS tov_total,
-    1.0 * p.cnt / t.total   AS share_in_tov
-FROM $pair_cnt AS p
-INNER JOIN $tov_tot AS t
-ON p.tov_marker = t.tov_marker;
+    g.tov_marker                                        AS tov_marker,
+    r.rows_cnt                                          AS rows_cnt,
+    g.marks_total                                       AS marks_total,
+    $fmt_dict(g.items, g.marks_total)                   AS judge_dict,
+    $share_of(g.items, g.marks_total, '(не нашёл)')     AS share_not_found,
+    $share_of(g.items, g.marks_total, '(другой маркер)') AS share_other
+FROM $grouped AS g
+INNER JOIN $tov_rows AS r
+ON g.tov_marker = r.tov_marker
+ORDER BY tov_marker;

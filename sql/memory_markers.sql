@@ -15,6 +15,8 @@ DECLARE $output1 AS String;
 --     "speech_judge": { ... } }
 -- Блоки проходов ищутся по наличию review_A / review_B, поэтому запрос переживёт
 -- и один проход, и другие имена ключей верхнего уровня.
+-- Текст в кавычках («…», "…", `…`) выкидывается до поиска: там судья цитирует
+-- ответ модели, и слово «память» в цитате упоминанием памяти не считается.
 --
 -- Выход (по 3 колонки на ответ):
 --   has_memory_A / has_memory_B          — Bool: память упомянута хоть в одном reasoning
@@ -39,6 +41,23 @@ _MEMORY_PARTS = [
     # r'забы\w*',                                         # включи, если «забыл/забывает» тоже считать памятью
 ]
 _MEMORY_RE = re.compile('(?iu)(' + '|'.join(_MEMORY_PARTS) + ')')
+
+# Цитаты не считаем: «память» внутри кавычек — это судья цитирует ответ модели,
+# а не рассуждает про память. Поставь False, чтобы учитывать и цитаты тоже.
+_IGNORE_QUOTED = True
+
+# Пары кавычек, содержимое которых вырезается перед поиском.
+# Одиночная прямая кавычка (') намеренно не включена: апостроф в тексте
+# склеился бы со следующим и выел кусок рассуждения.
+_QUOTED_RE = re.compile(
+    r'«[^«»]*»'          # «ёлочки»
+    r'|„[^„“”]*[“”]'     # „лапки“
+    r'|“[^“”]*”'         # “англ. двойные”
+    r'|"[^"]*"'          # "прямые"
+    r"|‘[^‘’]*’"         # ‘одинарные типографские’
+    r'|`[^`]*`',         # `бэктики`
+    re.S
+)
 
 _REVIEW_KEYS = ('review_A', 'review_B', 'review_a', 'review_b')
 
@@ -81,6 +100,13 @@ def _strings(node, acc):
     return acc
 
 
+def _has_memory(text):
+    """Память упомянута вне цитат."""
+    if _IGNORE_QUOTED:
+        text = _QUOTED_RE.sub(' ', text)
+    return bool(_MEMORY_RE.search(text))
+
+
 def _hits(review):
     """Имена маркеров одного review, в reasoning которых есть память."""
     if not isinstance(review, dict):
@@ -91,7 +117,7 @@ def _hits(review):
     return [
         str(name)
         for name, value in markers.items()
-        if any(_MEMORY_RE.search(t) for t in _strings(value, []))
+        if any(_has_memory(t) for t in _strings(value, []))
     ]
 
 

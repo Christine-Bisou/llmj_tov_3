@@ -7,8 +7,7 @@ PRAGMA yt.InferSchema = '1';
 
 DECLARE $input1 AS String;   -- разметка: instruct_id, source_A, source_B, ...
 DECLARE $input2 AS String;   -- прогон: input_meta.instruct_id, answers[].answer_producer.name
-DECLARE $output1 AS String;  -- склейка: строка разметки + ответы, разложенные по A/B
-DECLARE $output2 AS String;  -- диагностика склейки
+DECLARE $output1 AS String;  -- склейка: строка разметки + колонки прогона
 
 -- Имена продюсеров сравниваем без учёта регистра и пробелов по краям.
 $norm = ($s) -> {
@@ -23,14 +22,10 @@ $pair_key = ($x, $y) -> {
 
 -- Yson::From нужен, если колонка лежит нативным типом (struct/list).
 -- Если answers / input_meta уже Yson или Json — Yson::From можно убрать.
--- Обращаемся к элементам списка по индексу: '/0/...', '/1/...'.
-$answer_at = ($answers, $i) -> {
-    RETURN Yson::YPath(Yson::From($answers), '/' || CAST($i AS String));
-};
-
+-- К элементам answers обращаемся по индексу: '/0/...', '/1/...'.
 $producer_at = ($answers, $i) -> {
     RETURN CAST(Yson::ConvertToString(
-        Yson::YPath($answer_at($answers, $i), '/answer_producer/name')
+        Yson::YPath(Yson::From($answers), '/' || CAST($i AS String) || '/answer_producer/name')
     ) AS String);
 };
 
@@ -48,7 +43,12 @@ $second = (
         CAST(Yson::ConvertToString(Yson::YPath(Yson::From(t.input_meta), '/instruct_id')) AS String) AS instruct_id,
         $producer_at(t.answers, 0) AS producer_0,
         $producer_at(t.answers, 1) AS producer_1,
-        t.* WITHOUT if exists t._other, t.instruct_id
+        t.answers               AS answers,
+        t.input_final_messages  AS input_final_messages,
+        t.input_meta            AS input_meta,
+        t.input_render_data     AS input_render_data,
+        t.out_tov               AS out_tov,
+        t.raw_tov               AS raw_tov
     FROM $input2 AS t
 );
 
@@ -67,69 +67,23 @@ $second_keyed = (
 $joined = (
     SELECT
         f.*,
-        s.answers    AS answers,
-        s.producer_0 AS producer_0,
-        s.producer_1 AS producer_1,
-        s.input_meta AS input_meta
-        -- нужны ещё колонки из второй таблицы — дописывать сюда как s.<колонка>
+        s.producer_0            AS producer_0,
+        s.answers               AS answers,
+        s.input_final_messages  AS input_final_messages,
+        s.input_meta            AS input_meta,
+        s.input_render_data     AS input_render_data,
+        s.out_tov               AS out_tov,
+        s.raw_tov               AS raw_tov
     FROM $first AS f
     INNER JOIN $second_keyed AS s USING (instruct_id, pair_key)
-);
-
--- Раскладываем answers по source_A / source_B. Пара уже совпала по ключу,
--- поэтому достаточно понять, на каком месте лежит source_A.
-$aligned = (
-    SELECT
-        j.*,
-        IF($norm(producer_0) = source_a_key, 0, 1) AS idx_a,
-        IF($norm(producer_0) = source_a_key, 1, 0) AS idx_b
-    FROM $joined AS j
 );
 
 -- WITHOUT должен идти последним в списке колонок, иначе всё, что после него,
 -- парсер считает продолжением списка исключаемых колонок.
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
-    Yson::Serialize($answer_at(t.answers, t.idx_a)) AS answer_A,
-    Yson::Serialize($answer_at(t.answers, t.idx_b)) AS answer_B,
-    $producer_at(t.answers, t.idx_a)                AS answer_A_producer,
-    $producer_at(t.answers, t.idx_b)                AS answer_B_producer,
-
-    Yson::Serialize(Yson::YPath($answer_at(t.answers, t.idx_a), '/final_messages')) AS answer_A_final_messages,
-    Yson::Serialize(Yson::YPath($answer_at(t.answers, t.idx_b), '/final_messages')) AS answer_B_final_messages,
-    Yson::Serialize(Yson::YPath($answer_at(t.answers, t.idx_a), '/meta'))           AS answer_A_meta,
-    Yson::Serialize(Yson::YPath($answer_at(t.answers, t.idx_b), '/meta'))           AS answer_B_meta,
-
-    -- true, если в answers продюсеры лежат в обратном к разметке порядке
-    t.idx_a != 0                                    AS swapped,
-
-    t.* WITHOUT t.idx_a, t.idx_b
-FROM $aligned AS t;
-
--- Диагностика: сколько строк разметки нашло пару и почему остальные не нашли.
--- Джойн только по instruct_id, поэтому при нескольких прогонах на один
--- instruct_id строк здесь будет больше, чем в исходной разметке.
-$diag = (
-    SELECT
-        f.instruct_id   AS instruct_id,
-        f.pair_key      AS pair_first,
-        s.pair_key      AS pair_second,
-        CASE
-            WHEN s.pair_key IS NULL       THEN 'нет instruct_id во второй таблице'
-            WHEN f.pair_key = s.pair_key  THEN 'ок'
-            ELSE 'instruct_id есть, пара продюсеров другая'
-        END AS reason
-    FROM $first AS f
-    LEFT JOIN $second_keyed AS s USING (instruct_id)
-);
-
-INSERT INTO $output2 WITH TRUNCATE
-SELECT
-    reason,
-    COUNT(*)            AS cnt,
-    SOME(instruct_id)   AS sample_instruct_id,
-    SOME(pair_first)    AS sample_pair_first,
-    SOME(pair_second)   AS sample_pair_second
-FROM $diag
-GROUP BY reason
-ORDER BY cnt DESC;
+    -- true, если в answers продюсеры лежат в обратном к разметке порядке:
+    -- answers[0] — это source_B, а answers[1] — source_A
+    $norm(j.producer_0) != j.source_a_key AS swapped,
+    j.* WITHOUT j.pair_key, j.source_a_key, j.producer_0
+FROM $joined AS j;

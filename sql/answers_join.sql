@@ -17,27 +17,28 @@ $norm = ($s) -> {
 
 -- Ключ пары: нормализованные имена, отсортированные по алфавиту.
 -- Именно поэтому порядок продюсеров внутри answers роли не играет.
-$key_from_list = ($names) -> {
-    RETURN ListConcat(ListSort($names), ' + ');
-};
-
 $pair_key = ($x, $y) -> {
-    RETURN $key_from_list(AsList($norm($x), $norm($y)));
-};
-
--- имя продюсера из одного элемента answers
-$node_name = ($answer) -> {
-    RETURN CAST(Yson::ConvertToString(Yson::YPath($answer, '/answer_producer/name')) AS String);
+    RETURN ListConcat(ListSort(AsList($norm($x), $norm($y))), ' + ');
 };
 
 -- Yson::From нужен, если колонка лежит нативным типом (struct/list).
--- Если input_meta / answers уже Yson или Json — Yson::From можно убрать.
+-- Если answers / input_meta уже Yson или Json — Yson::From можно убрать.
+-- Обращаемся к элементам списка по индексу: '/0/...', '/1/...'.
+$answer_at = ($answers, $i) -> {
+    RETURN Yson::YPath(Yson::From($answers), '/' || CAST($i AS String));
+};
+
+$producer_at = ($answers, $i) -> {
+    RETURN CAST(Yson::ConvertToString(
+        Yson::YPath($answer_at($answers, $i), '/answer_producer/name')
+    ) AS String);
+};
+
 $first = (
     SELECT
         CAST(a.instruct_id AS String)       AS instruct_id,
         $pair_key(a.source_A, a.source_B)   AS pair_key,
         $norm(a.source_A)                   AS source_a_key,
-        $norm(a.source_B)                   AS source_b_key,
         a.* WITHOUT if exists a._other, a.instruct_id
     FROM $input1 AS a
 );
@@ -45,26 +46,19 @@ $first = (
 $second = (
     SELECT
         CAST(Yson::ConvertToString(Yson::YPath(Yson::From(t.input_meta), '/instruct_id')) AS String) AS instruct_id,
-        COALESCE(Yson::ConvertToList(Yson::From(t.answers)), ListCreate(Yson))                       AS answers_nodes,
+        $producer_at(t.answers, 0) AS producer_0,
+        $producer_at(t.answers, 1) AS producer_1,
         t.* WITHOUT if exists t._other, t.instruct_id
     FROM $input2 AS t
-);
-
-$second_named = (
-    SELECT
-        s.*,
-        ListMap(answers_nodes, ($a) -> { RETURN $node_name($a) })        AS producers,
-        ListMap(answers_nodes, ($a) -> { RETURN $norm($node_name($a)) }) AS producers_key
-    FROM $second AS s
 );
 
 $second_keyed = (
     SELECT
         s.*,
-        $key_from_list(producers_key) AS pair_key
-    FROM $second_named AS s
+        $pair_key(producer_0, producer_1) AS pair_key
+    FROM $second AS s
     -- строки, где продюсеров не двое, парой не являются
-    WHERE ListLength(producers_key) = 2
+    WHERE producer_0 IS NOT NULL AND producer_1 IS NOT NULL
 );
 
 -- Собственно джойн: по instruct_id И по паре продюсеров.
@@ -73,47 +67,44 @@ $second_keyed = (
 $joined = (
     SELECT
         f.*,
-        s.answers_nodes AS answers_nodes,
-        s.producers     AS producers,
-        s.producers_key AS producers_key,
-        s.input_meta    AS input_meta
+        s.answers    AS answers,
+        s.producer_0 AS producer_0,
+        s.producer_1 AS producer_1,
+        s.input_meta AS input_meta
         -- нужны ещё колонки из второй таблицы — дописывать сюда как s.<колонка>
     FROM $first AS f
     INNER JOIN $second_keyed AS s USING (instruct_id, pair_key)
 );
 
--- Раскладываем answers по source_A / source_B: ищем позицию нужного продюсера.
+-- Раскладываем answers по source_A / source_B. Пара уже совпала по ключу,
+-- поэтому достаточно понять, на каком месте лежит source_A.
 $aligned = (
     SELECT
         j.*,
-        ListIndexOf(producers_key, source_a_key) AS idx_a,
-        ListIndexOf(producers_key, source_b_key) AS idx_b
+        IF($norm(producer_0) = source_a_key, 0, 1) AS idx_a,
+        IF($norm(producer_0) = source_a_key, 1, 0) AS idx_b
     FROM $joined AS j
 );
 
-$picked = (
-    SELECT
-        t.* WITHOUT t.answers_nodes, t.producers_key, t.idx_a, t.idx_b,
-        ListHead(ListSkip(answers_nodes, COALESCE(idx_a, 0ul))) AS answer_A_node,
-        ListHead(ListSkip(answers_nodes, COALESCE(idx_b, 0ul))) AS answer_B_node,
-        -- true, если в answers продюсеры лежат в обратном к разметке порядке
-        idx_a != 0ul                                            AS swapped
-    FROM $aligned AS t
-    WHERE idx_a IS NOT NULL AND idx_b IS NOT NULL AND idx_a != idx_b
-);
-
+-- WITHOUT должен идти последним в списке колонок, иначе всё, что после него,
+-- парсер считает продолжением списка исключаемых колонок.
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
-    p.*,
-    $node_name(answer_A_node)                        AS answer_A_producer,
-    $node_name(answer_B_node)                        AS answer_B_producer,
-    Yson::YPath(answer_A_node, '/final_messages')    AS answer_A_final_messages,
-    Yson::YPath(answer_B_node, '/final_messages')    AS answer_B_final_messages,
-    Yson::YPath(answer_A_node, '/meta')              AS answer_A_meta,
-    Yson::YPath(answer_B_node, '/meta')              AS answer_B_meta,
-    Yson::YPath(answer_A_node, '/render_data')       AS answer_A_render_data,
-    Yson::YPath(answer_B_node, '/render_data')       AS answer_B_render_data
-FROM $picked AS p;
+    Yson::Serialize($answer_at(t.answers, t.idx_a)) AS answer_A,
+    Yson::Serialize($answer_at(t.answers, t.idx_b)) AS answer_B,
+    $producer_at(t.answers, t.idx_a)                AS answer_A_producer,
+    $producer_at(t.answers, t.idx_b)                AS answer_B_producer,
+
+    Yson::Serialize(Yson::YPath($answer_at(t.answers, t.idx_a), '/final_messages')) AS answer_A_final_messages,
+    Yson::Serialize(Yson::YPath($answer_at(t.answers, t.idx_b), '/final_messages')) AS answer_B_final_messages,
+    Yson::Serialize(Yson::YPath($answer_at(t.answers, t.idx_a), '/meta'))           AS answer_A_meta,
+    Yson::Serialize(Yson::YPath($answer_at(t.answers, t.idx_b), '/meta'))           AS answer_B_meta,
+
+    -- true, если в answers продюсеры лежат в обратном к разметке порядке
+    t.idx_a != 0                                    AS swapped,
+
+    t.* WITHOUT t.idx_a, t.idx_b
+FROM $aligned AS t;
 
 -- Диагностика: сколько строк разметки нашло пару и почему остальные не нашли.
 -- Джойн только по instruct_id, поэтому при нескольких прогонах на один

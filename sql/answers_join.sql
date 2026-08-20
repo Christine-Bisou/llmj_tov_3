@@ -5,7 +5,7 @@ PRAGMA AnsiOptionalAs;
 PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '1';
 
-DECLARE $input1 AS String;   -- разметка: instruct_id, source_A, source_B, ...
+DECLARE $input1 AS String;   -- разметка: instruct_id, source_A, source_B, source_winner, ...
 DECLARE $input2 AS String;   -- прогон: input_meta.instruct_id, answers[].answer_producer.name
 DECLARE $output1 AS String;  -- склейка: строка разметки + колонки прогона
 
@@ -20,13 +20,17 @@ $pair_key = ($x, $y) -> {
     RETURN ListConcat(ListSort(AsList($norm($x), $norm($y))), ' + ');
 };
 
+-- Строка по пути внутри Yson-колонки.
 -- Yson::From нужен, если колонка лежит нативным типом (struct/list).
--- Если answers / input_meta уже Yson или Json — Yson::From можно убрать.
+-- Если колонка уже Yson — Yson::From можно убрать,
+-- если это строка с JSON — заменить на Yson::ParseJson(CAST($v AS Json)).
+$ypath_str = ($v, $path) -> {
+    RETURN CAST(Yson::ConvertToString(Yson::YPath(Yson::From($v), $path)) AS String);
+};
+
 -- К элементам answers обращаемся по индексу: '/0/...', '/1/...'.
 $producer_at = ($answers, $i) -> {
-    RETURN CAST(Yson::ConvertToString(
-        Yson::YPath(Yson::From($answers), '/' || CAST($i AS String) || '/answer_producer/name')
-    ) AS String);
+    RETURN $ypath_str($answers, '/' || CAST($i AS String) || '/answer_producer/name');
 };
 
 $first = (
@@ -40,10 +44,12 @@ $first = (
 
 $second = (
     SELECT
-        CAST(Yson::ConvertToString(Yson::YPath(Yson::From(t.input_meta), '/instruct_id')) AS String) AS instruct_id,
-        $producer_at(t.answers, 0) AS producer_0,
-        $producer_at(t.answers, 1) AS producer_1,
-        CAST(Yson::ConvertToString(Yson::YPath(Yson::From(t.out_tov), '/winner')) AS String) AS tov_winner_raw,
+        $ypath_str(t.input_meta, '/instruct_id')                AS instruct_id,
+        $producer_at(t.answers, 0)                              AS producer_0,
+        $producer_at(t.answers, 1)                              AS producer_1,
+        $ypath_str(t.out_tov, '/winner')                        AS tov_winner_raw,
+        $ypath_str(t.raw_tov, '/direct/winner_reasoning')       AS tov_reasoning_direct,
+        $ypath_str(t.raw_tov, '/reverse/winner_reasoning')      AS tov_reasoning_reverse,
         t.answers               AS answers,
         t.input_final_messages  AS input_final_messages,
         t.input_meta            AS input_meta,
@@ -68,15 +74,17 @@ $second_keyed = (
 $joined = (
     SELECT
         f.*,
-        s.producer_0            AS producer_0,
-        s.producer_1            AS producer_1,
-        s.tov_winner_raw        AS tov_winner_raw,
-        s.answers               AS answers,
-        s.input_final_messages  AS input_final_messages,
-        s.input_meta            AS input_meta,
-        s.input_render_data     AS input_render_data,
-        s.out_tov               AS out_tov,
-        s.raw_tov               AS raw_tov
+        s.producer_0             AS producer_0,
+        s.producer_1             AS producer_1,
+        s.tov_winner_raw         AS tov_winner_raw,
+        s.tov_reasoning_direct   AS tov_reasoning_direct,
+        s.tov_reasoning_reverse  AS tov_reasoning_reverse,
+        s.answers                AS answers,
+        s.input_final_messages   AS input_final_messages,
+        s.input_meta             AS input_meta,
+        s.input_render_data      AS input_render_data,
+        s.out_tov                AS out_tov,
+        s.raw_tov                AS raw_tov
     FROM $first AS f
     INNER JOIN $second_keyed AS s USING (instruct_id, pair_key)
 );

@@ -20,18 +20,6 @@ $pair_key = ($x, $y) -> {
     RETURN ListConcat(ListSort(AsList($norm($x), $norm($y))), ' + ');
 };
 
--- Победитель записан то именем источника, то позицией — приводим к имени.
--- tie / both_bad / skip / пусто считаем ничьёй, как в error_breakdown.sql.
-$winner_name = ($w, $name_1, $name_2) -> {
-    $v = $norm($w);
-    RETURN CASE
-        WHEN $v IN ('DRAW', 'TIE', 'BOTH_BAD', 'SKIP', '') THEN 'DRAW'
-        WHEN $v IN ('MODEL_1', 'SOURCE_A', 'A')            THEN $norm($name_1)
-        WHEN $v IN ('MODEL_2', 'SOURCE_B', 'B')            THEN $norm($name_2)
-        ELSE $v
-    END;
-};
-
 -- Yson::From нужен, если колонка лежит нативным типом (struct/list).
 -- Если answers / input_meta уже Yson или Json — Yson::From можно убрать.
 -- К элементам answers обращаемся по индексу: '/0/...', '/1/...'.
@@ -93,15 +81,14 @@ $joined = (
     INNER JOIN $second_keyed AS s USING (instruct_id, pair_key)
 );
 
--- Вердикты обеих таблиц в одном пространстве значений — именах продюсеров.
 $verdicts = (
     SELECT
         j.*,
         -- true, если в answers продюсеры лежат в обратном к разметке порядке:
         -- answers[0] — это source_B, а answers[1] — source_A
-        $norm(j.producer_0) != j.source_a_key                       AS swapped,
-        $winner_name(j.source_winner, j.source_A, j.source_B)       AS winner_markup,
-        $winner_name(j.tov_winner_raw, j.producer_0, j.producer_1)  AS winner_tov
+        $norm(j.producer_0) != j.source_a_key AS swapped,
+        $norm(j.source_winner)                AS winner_markup,
+        $norm(j.tov_winner_raw)               AS winner_tov
     FROM $joined AS j
 );
 

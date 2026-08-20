@@ -20,6 +20,18 @@ $pair_key = ($x, $y) -> {
     RETURN ListConcat(ListSort(AsList($norm($x), $norm($y))), ' + ');
 };
 
+-- Победитель записан то именем источника, то позицией — приводим к имени.
+-- tie / both_bad / skip / пусто считаем ничьёй, как в error_breakdown.sql.
+$winner_name = ($w, $name_1, $name_2) -> {
+    $v = $norm($w);
+    RETURN CASE
+        WHEN $v IN ('DRAW', 'TIE', 'BOTH_BAD', 'SKIP', '') THEN 'DRAW'
+        WHEN $v IN ('MODEL_1', 'SOURCE_A', 'A')            THEN $norm($name_1)
+        WHEN $v IN ('MODEL_2', 'SOURCE_B', 'B')            THEN $norm($name_2)
+        ELSE $v
+    END;
+};
+
 -- Yson::From нужен, если колонка лежит нативным типом (struct/list).
 -- Если answers / input_meta уже Yson или Json — Yson::From можно убрать.
 -- К элементам answers обращаемся по индексу: '/0/...', '/1/...'.
@@ -43,6 +55,7 @@ $second = (
         CAST(Yson::ConvertToString(Yson::YPath(Yson::From(t.input_meta), '/instruct_id')) AS String) AS instruct_id,
         $producer_at(t.answers, 0) AS producer_0,
         $producer_at(t.answers, 1) AS producer_1,
+        CAST(Yson::ConvertToString(Yson::YPath(Yson::From(t.out_tov), '/winner')) AS String) AS tov_winner_raw,
         t.answers               AS answers,
         t.input_final_messages  AS input_final_messages,
         t.input_meta            AS input_meta,
@@ -68,6 +81,8 @@ $joined = (
     SELECT
         f.*,
         s.producer_0            AS producer_0,
+        s.producer_1            AS producer_1,
+        s.tov_winner_raw        AS tov_winner_raw,
         s.answers               AS answers,
         s.input_final_messages  AS input_final_messages,
         s.input_meta            AS input_meta,
@@ -78,12 +93,23 @@ $joined = (
     INNER JOIN $second_keyed AS s USING (instruct_id, pair_key)
 );
 
+-- Вердикты обеих таблиц в одном пространстве значений — именах продюсеров.
+$verdicts = (
+    SELECT
+        j.*,
+        -- true, если в answers продюсеры лежат в обратном к разметке порядке:
+        -- answers[0] — это source_B, а answers[1] — source_A
+        $norm(j.producer_0) != j.source_a_key                       AS swapped,
+        $winner_name(j.source_winner, j.source_A, j.source_B)       AS winner_markup,
+        $winner_name(j.tov_winner_raw, j.producer_0, j.producer_1)  AS winner_tov
+    FROM $joined AS j
+);
+
+-- Оставляем только расхождения разметки и джаджа.
 -- WITHOUT должен идти последним в списке колонок, иначе всё, что после него,
 -- парсер считает продолжением списка исключаемых колонок.
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
-    -- true, если в answers продюсеры лежат в обратном к разметке порядке:
-    -- answers[0] — это source_B, а answers[1] — source_A
-    $norm(j.producer_0) != j.source_a_key AS swapped,
-    j.* WITHOUT j.pair_key, j.source_a_key, j.producer_0
-FROM $joined AS j;
+    v.* WITHOUT v.pair_key, v.source_a_key, v.producer_0, v.producer_1, v.tov_winner_raw
+FROM $verdicts AS v
+WHERE v.winner_markup != v.winner_tov;

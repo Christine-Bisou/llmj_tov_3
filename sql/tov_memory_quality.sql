@@ -101,7 +101,9 @@ $scored = (
         j.*,
         IF(j.tov_memory, 'model_2', 'draw')                      AS gold,
         $soft(j.pred,   IF(j.tov_memory, 'model_2', 'draw'))     AS soft_score,
-        $strict(j.pred, IF(j.tov_memory, 'model_2', 'draw'))     AS strict_score
+        $strict(j.pred, IF(j.tov_memory, 'model_2', 'draw'))     AS strict_score,
+        j.matched AND j.tov_memory                               AS seg_problem,
+        j.matched AND NOT j.tov_memory                           AS seg_no_problem
     FROM $joined AS j
 );
 
@@ -109,23 +111,43 @@ INSERT INTO $output1 WITH TRUNCATE
 SELECT * FROM $scored
 ORDER BY instruct_id;
 
--- Итог: качество отдельно на tov_memory = true и на tov_memory = false,
--- плюс сколько на false модель поставила ничью и сколько всего false.
+-- ------------------------------------------------------------------
+-- Итог: одна строка, каждый блок — словарь (json).
+--
+--   no_tov_memory_problem           распределение ответов на tov_memory = false
+--   tov_memory_problem              распределение ответов на tov_memory = true
+--   no_tov_memory_problem_quantity  качество на false: ничья = 1, любой
+--                                   победитель = 0.5 (soft) и 0 (strict)
+--   tov_memory_problem_quantity     качество на true: model_2 = 1,
+--                                   draw = 0.5 (soft) и 0 (strict), model_1 = 0
+-- ------------------------------------------------------------------
 INSERT INTO $output2 WITH TRUNCATE
 SELECT
-    -- tov_memory = true, правильный ответ model_2
-    COUNT_IF(matched AND tov_memory)                            AS cnt_true,
-    AVG(IF(matched AND tov_memory, soft_score))                 AS soft_true,
-    AVG(IF(matched AND tov_memory, strict_score))               AS strict_true,
+    Yson::SerializeJson(Yson::From(AsStruct(
+        COUNT_IF(seg_no_problem AND pred = 'model_1')   AS model_1,
+        COUNT_IF(seg_no_problem AND pred = 'draw')      AS draw,
+        COUNT_IF(seg_no_problem AND pred = 'model_2')   AS model_2,
+        COUNT_IF(seg_no_problem)                        AS total
+    )))                                                 AS no_tov_memory_problem,
 
-    -- tov_memory = false, правильный ответ — ничья
-    COUNT_IF(matched AND NOT tov_memory)                        AS cnt_false,
-    AVG(IF(matched AND NOT tov_memory, soft_score))             AS soft_false,
-    AVG(IF(matched AND NOT tov_memory, strict_score))           AS strict_false,
+    Yson::SerializeJson(Yson::From(AsStruct(
+        COUNT_IF(seg_problem AND pred = 'model_1')      AS model_1,
+        COUNT_IF(seg_problem AND pred = 'draw')         AS draw,
+        COUNT_IF(seg_problem AND pred = 'model_2')      AS model_2,
+        COUNT_IF(seg_problem)                           AS total
+    )))                                                 AS tov_memory_problem,
 
-    -- сколько ничьих модель поставила на false и какая это доля от всех false
-    COUNT_IF(matched AND NOT tov_memory AND pred = 'draw')      AS draw_on_false,
-    AVG(IF(matched AND NOT tov_memory, IF(pred = 'draw', 1.0, 0.0))) AS draw_rate_false,
+    Yson::SerializeJson(Yson::From(AsStruct(
+        AVG(IF(seg_no_problem, soft_score))             AS soft,
+        AVG(IF(seg_no_problem, strict_score))           AS strict,
+        COUNT_IF(seg_no_problem)                        AS cnt
+    )))                                                 AS no_tov_memory_problem_quantity,
 
-    COUNT_IF(NOT matched)                                       AS not_matched
+    Yson::SerializeJson(Yson::From(AsStruct(
+        AVG(IF(seg_problem, soft_score))                AS soft,
+        AVG(IF(seg_problem, strict_score))              AS strict,
+        COUNT_IF(seg_problem)                           AS cnt
+    )))                                                 AS tov_memory_problem_quantity,
+
+    COUNT_IF(NOT matched)                               AS not_matched
 FROM $scored;

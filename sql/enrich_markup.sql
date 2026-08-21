@@ -20,4 +20,4 @@ SELECT
     b.bucket     AS bucket
 FROM $input1 AS a
 LEFT JOIN $input2 AS b
-ON Yson::ConvertToString(a.input_meta["instruct_id"]) = CAST(b.req_id AS String);
+ON CAST(a.input_meta.instruct_id AS String) = CAST(b.req_id AS String);

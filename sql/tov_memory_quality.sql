@@ -109,11 +109,23 @@ INSERT INTO $output1 WITH TRUNCATE
 SELECT * FROM $scored
 ORDER BY instruct_id;
 
--- Итог: одна строка — среднее по всему замеру
+-- Итог: качество отдельно на tov_memory = true и на tov_memory = false,
+-- плюс сколько на false модель поставила ничью и сколько всего false.
 INSERT INTO $output2 WITH TRUNCATE
 SELECT
-    COUNT_IF(matched)                           AS cnt,
-    AVG(IF(matched, soft_score))                AS soft_quality,
-    AVG(IF(matched, strict_score))              AS strict_quality,
-    COUNT_IF(NOT matched)                       AS not_matched
+    -- tov_memory = true, правильный ответ model_2
+    COUNT_IF(matched AND tov_memory)                            AS cnt_true,
+    AVG(IF(matched AND tov_memory, soft_score))                 AS soft_true,
+    AVG(IF(matched AND tov_memory, strict_score))               AS strict_true,
+
+    -- tov_memory = false, правильный ответ — ничья
+    COUNT_IF(matched AND NOT tov_memory)                        AS cnt_false,
+    AVG(IF(matched AND NOT tov_memory, soft_score))             AS soft_false,
+    AVG(IF(matched AND NOT tov_memory, strict_score))           AS strict_false,
+
+    -- сколько ничьих модель поставила на false и какая это доля от всех false
+    COUNT_IF(matched AND NOT tov_memory AND pred = 'draw')      AS draw_on_false,
+    AVG(IF(matched AND NOT tov_memory, IF(pred = 'draw', 1.0, 0.0))) AS draw_rate_false,
+
+    COUNT_IF(NOT matched)                                       AS not_matched
 FROM $scored;

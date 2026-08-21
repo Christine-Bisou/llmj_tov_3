@@ -1,6 +1,7 @@
 PRAGMA Yson.AutoConvert;
 PRAGMA yson.DisableStrict;
 PRAGMA SimpleColumns;
+PRAGMA yt.UseNativeYtTypes;
 PRAGMA AnsiOptionalAs;
 PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '1';
@@ -112,7 +113,7 @@ SELECT * FROM $scored
 ORDER BY instruct_id;
 
 -- ------------------------------------------------------------------
--- Итог: одна строка, каждый блок — словарь (json).
+-- Итог: одна строка, каждый блок — структура.
 --
 --   no_tov_memory_problem           распределение ответов на tov_memory = false
 --   tov_memory_problem              распределение ответов на tov_memory = true
@@ -123,31 +124,31 @@ ORDER BY instruct_id;
 -- ------------------------------------------------------------------
 INSERT INTO $output2 WITH TRUNCATE
 SELECT
-    Yson::SerializeJson(Yson::From(AsStruct(
-        COUNT_IF(seg_no_problem AND pred = 'model_1')   AS model_1,
-        COUNT_IF(seg_no_problem AND pred = 'draw')      AS draw,
-        COUNT_IF(seg_no_problem AND pred = 'model_2')   AS model_2,
-        COUNT_IF(seg_no_problem)                        AS total
-    )))                                                 AS no_tov_memory_problem,
+    AsStruct(
+        CAST(COUNT_IF(seg_no_problem AND pred = 'model_1') AS Int64) AS model_1,
+        CAST(COUNT_IF(seg_no_problem AND pred = 'draw')    AS Int64) AS draw,
+        CAST(COUNT_IF(seg_no_problem AND pred = 'model_2') AS Int64) AS model_2,
+        CAST(COUNT_IF(seg_no_problem)                      AS Int64) AS total
+    ) AS no_tov_memory_problem,
 
-    Yson::SerializeJson(Yson::From(AsStruct(
-        COUNT_IF(seg_problem AND pred = 'model_1')      AS model_1,
-        COUNT_IF(seg_problem AND pred = 'draw')         AS draw,
-        COUNT_IF(seg_problem AND pred = 'model_2')      AS model_2,
-        COUNT_IF(seg_problem)                           AS total
-    )))                                                 AS tov_memory_problem,
+    AsStruct(
+        CAST(COUNT_IF(seg_problem AND pred = 'model_1')    AS Int64) AS model_1,
+        CAST(COUNT_IF(seg_problem AND pred = 'draw')       AS Int64) AS draw,
+        CAST(COUNT_IF(seg_problem AND pred = 'model_2')    AS Int64) AS model_2,
+        CAST(COUNT_IF(seg_problem)                         AS Int64) AS total
+    ) AS tov_memory_problem,
 
-    Yson::SerializeJson(Yson::From(AsStruct(
-        AVG(IF(seg_no_problem, soft_score))             AS soft,
-        AVG(IF(seg_no_problem, strict_score))           AS strict,
-        COUNT_IF(seg_no_problem)                        AS cnt
-    )))                                                 AS no_tov_memory_problem_quantity,
+    AsStruct(
+        AVG(IF(seg_no_problem, soft_score))                          AS soft,
+        AVG(IF(seg_no_problem, strict_score))                        AS strict,
+        CAST(COUNT_IF(seg_no_problem)                      AS Int64) AS cnt
+    ) AS no_tov_memory_problem_quantity,
 
-    Yson::SerializeJson(Yson::From(AsStruct(
-        AVG(IF(seg_problem, soft_score))                AS soft,
-        AVG(IF(seg_problem, strict_score))              AS strict,
-        COUNT_IF(seg_problem)                           AS cnt
-    )))                                                 AS tov_memory_problem_quantity,
+    AsStruct(
+        AVG(IF(seg_problem, soft_score))                             AS soft,
+        AVG(IF(seg_problem, strict_score))                           AS strict,
+        CAST(COUNT_IF(seg_problem)                         AS Int64) AS cnt
+    ) AS tov_memory_problem_quantity,
 
-    COUNT_IF(NOT matched)                               AS not_matched
+    CAST(COUNT_IF(NOT matched) AS Int64)                             AS not_matched
 FROM $scored;

@@ -109,29 +109,11 @@ INSERT INTO $output1 WITH TRUNCATE
 SELECT * FROM $scored
 ORDER BY instruct_id;
 
--- Итог: строка «всего» плюс разбивка по значению tov_memory
+-- Итог: одна строка — среднее по всему замеру
 INSERT INTO $output2 WITH TRUNCATE
 SELECT
-    'всего'                                     AS scope,
-    COUNT(*)                                    AS cnt,
-    AVG(soft_score)                             AS soft_quality,
-    AVG(strict_score)                           AS strict_quality,
-    COUNT_IF(pred = 'model_2')                  AS pred_model_2,
-    COUNT_IF(pred = 'model_1')                  AS pred_model_1,
-    COUNT_IF(pred = 'draw')                     AS pred_draw
-FROM $scored
-WHERE matched
-
-UNION ALL
-
-SELECT
-    IF(tov_memory, 'tov_memory = true', 'tov_memory = false') AS scope,
-    COUNT(*)                                    AS cnt,
-    AVG(soft_score)                             AS soft_quality,
-    AVG(strict_score)                           AS strict_quality,
-    COUNT_IF(pred = 'model_2')                  AS pred_model_2,
-    COUNT_IF(pred = 'model_1')                  AS pred_model_1,
-    COUNT_IF(pred = 'draw')                     AS pred_draw
-FROM $scored
-WHERE matched
-GROUP BY tov_memory;
+    COUNT_IF(matched)                           AS cnt,
+    AVG(IF(matched, soft_score))                AS soft_quality,
+    AVG(IF(matched, strict_score))              AS strict_quality,
+    COUNT_IF(NOT matched)                       AS not_matched
+FROM $scored;

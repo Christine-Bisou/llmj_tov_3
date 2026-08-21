@@ -36,7 +36,7 @@ $norm = ($v) -> {
 $flag = ($v) -> {
     RETURN CASE
         WHEN $v IS NULL                          THEN false
-        WHEN LOWER($v) IN ('true', '1', 'yes', 't') THEN true
+        WHEN String::AsciiToLower($v) IN ('true', '1', 'yes', 't') THEN true
         ELSE false
     END;
 };

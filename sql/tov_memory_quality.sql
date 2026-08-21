@@ -5,7 +5,7 @@ PRAGMA AnsiOptionalAs;
 PRAGMA AnsiInForEmptyOrNullableItemsCollections;
 PRAGMA yt.InferSchema = '1';
 
-DECLARE $input1 AS String;   -- прогон модели: input_meta.instruct_id + out_tov.out_tov (model_1 / model_2 / draw)
+DECLARE $input1 AS String;   -- прогон модели: input_meta.instruct_id + out_tov.winner (model_1 / model_2 / tie)
 DECLARE $input2 AS String;   -- разметка: input_meta.instruct_id + tov_memory (true / false)
 DECLARE $output1 AS String;  -- построчная склейка с баллами
 DECLARE $output2 AS String;  -- две метрики: soft и strict
@@ -18,9 +18,9 @@ $iid = ($m) -> {
     RETURN Yson::ConvertToString(Yson::Lookup($m, 'instruct_id'));
 };
 
--- вердикт модели лежит вложенным полем out_tov внутри колонки out_tov
+-- вердикт модели: {"winner": "model_2", ...} внутри колонки out_tov
 $verdict = ($node) -> {
-    RETURN Yson::ConvertToString(Yson::Lookup($node, 'out_tov'));
+    RETURN Yson::ConvertToString(Yson::Lookup($node, 'winner'));
 };
 
 -- tie / both_bad / skip / пусто / NULL — всё это ничья

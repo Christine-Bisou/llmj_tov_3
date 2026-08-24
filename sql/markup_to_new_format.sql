@@ -21,8 +21,9 @@ DECLARE $output1 AS String; -- она же, приведённая к новом
 
 $opts = Yson::Options(false AS Strict, true AS AutoConvert);
 
--- Опции передаются явно: без них ConvertTo* падает на entity вместо NULL,
--- а pool_id и task_summarization в старом формате как раз лежат как #.
+-- Опции передаются явно: без них ConvertTo* падает вместо того, чтобы вернуть
+-- NULL, а pool_id, project_id и task_summarization в старом формате лежат
+-- словарём-заглушкой {} — как раз тот случай.
 $str = ($x) -> (
     COALESCE(
         Yson::ConvertToString($x, $opts),
@@ -87,6 +88,8 @@ $agg_drop_keys = AsList(
     Utf8("pool_id"), Utf8("project_id"), Utf8("markup_metadata"),
     Utf8("real_source_A"), Utf8("real_source_B"),
     Utf8("pointwise_A"), Utf8("pointwise_B"),
+    -- в старом формате тут пустой словарь-заглушка, в новом — строка
+    Utf8("task_summarization"),
     -- в новой схеме этих ключей нет; в выгрузках разметки их и не бывает,
     -- строка на случай таблиц, собранных judge_merge_pretty.sql
     Utf8("clc_metrics_A"), Utf8("clc_metrics_B"),
@@ -110,6 +113,7 @@ $to_new_agg = ($x) -> {
                 AsTuple(Utf8("markup_metadata"), $markup_metadata($node)),
                 AsTuple(Utf8("real_source_A"), Yson::From($top_str($node, "real_source_A"))),
                 AsTuple(Utf8("real_source_B"), Yson::From($top_str($node, "real_source_B"))),
+                AsTuple(Utf8("task_summarization"), Yson::From($top_str($node, "task_summarization"))),
                 AsTuple(Utf8("pointwise_A"), $pointwise($node, "pointwise_A")),
                 AsTuple(Utf8("pointwise_B"), $pointwise($node, "pointwise_B"))
             )

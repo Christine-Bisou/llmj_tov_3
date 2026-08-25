@@ -77,11 +77,12 @@ $check_fm2 = ($items) -> (Ensure(
     "final_messages_2 must be non-empty"
 ));
 
--- Симметричная проверка: вызывается для каждой из двух моделей.
-$check_source = ($src, $other) -> (Ensure(
-    Ensure($src, $src != "", "answer_source_1 / answer_source_2 must be non-empty"),
-    $src != $other,
-    "answer_source_1 and answer_source_2 must differ"
+-- Равенство answer_source_1 и answer_source_2 не проверяем: в парной таблице
+-- встречаются пары одной и той же модели, и это нормальные строки.
+$check_source = ($src) -> (Ensure(
+    $src,
+    $src != "",
+    "answer_source_1 / answer_source_2 must be non-empty"
 ));
 
 -- Последняя реплика ассистента в input_final_messages не нужна: она и есть
@@ -160,13 +161,7 @@ FROM (
         ) AS instruct_id,
         $check_fm1(Yson::ConvertToList(t.final_messages_1)) AS fm1_items,
         $check_fm2(Yson::ConvertToList(t.final_messages_2)) AS fm2_items,
-        $check_source(
-            COALESCE(t.answer_source_1, ""),
-            COALESCE(t.answer_source_2, "")
-        ) AS answer_source_1,
-        $check_source(
-            COALESCE(t.answer_source_2, ""),
-            COALESCE(t.answer_source_1, "")
-        ) AS answer_source_2
+        $check_source(COALESCE(t.answer_source_1, "")) AS answer_source_1,
+        $check_source(COALESCE(t.answer_source_2, "")) AS answer_source_2
     FROM $input1 AS t
 ) AS r;

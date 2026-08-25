@@ -31,27 +31,63 @@ $tags = AsList(
 $null_yson = Yson::From(Nothing(String?));
 
 -- ---------------------------------------------------------------------------
--- instruct_id пересобираем как md5 от диалогов, ответов и имён моделей:
--- исходный instruct_id в парной таблице может повторяться (один диалог —
--- несколько пар), а на выходе ключ обязан быть уникальным.
+-- instruct_id пересобираем как md5: исходный instruct_id в парной таблице
+-- может повторяться (один диалог — несколько пар), а на выходе ключ обязан
+-- быть уникальным.
+--
+-- В хеш идут только строковые колонки. Сериализовать сюда final_messages_1/2
+-- дороже всего остального запроса вместе взятого, а различать строки они не
+-- помогают: ответы в них те же самые, что в answer_1 / answer_2.
 -- ---------------------------------------------------------------------------
-$json = ($value) -> (CAST(Yson::SerializeJson($value) AS String) ?? "");
+$make_instruct_id = ($id, $src1, $src2, $a1, $a2) -> (Digest::Md5Hex(
+    $id || "\x1f" || $src1 || "\x1f" || $src2 || "\x1f" || $a1 || "\x1f" || $a2
+));
 
-$make_instruct_id = ($fm1, $fm2, $src1, $src2, $a1, $a2) -> (Digest::Md5Hex(
-    $json($fm1) || "\x1f" ||
-    $json($fm2) || "\x1f" ||
-    $src1 || "\x1f" || $src2 || "\x1f" ||
-    $a1 || "\x1f" || $a2
+DEFINE SUBQUERY $ids() AS
+    SELECT $make_instruct_id(
+        COALESCE(t.instruct_id, ""),
+        COALESCE(t.answer_source_1, ""),
+        COALESCE(t.answer_source_2, ""),
+        COALESCE(t.answer_1, ""),
+        COALESCE(t.answer_2, "")
+    ) AS instruct_id
+    FROM $input1 AS t;
+END DEFINE;
+
+-- ---------------------------------------------------------------------------
+-- Построчные проверки. Первая же битая строка роняет весь запрос — так мы не
+-- пишем молча битую корзину и при этом не платим за отдельный проход по
+-- Yson-колонкам ради подсчёта нарушений.
+-- ---------------------------------------------------------------------------
+$last_role = ($items) -> (Yson::LookupString(ListLast($items), "role") ?? "");
+
+$check_fm1 = ($items) -> (Ensure(
+    Ensure(
+        $items,
+        ListLength($items) > 1u,
+        "final_messages_1 must contain at least two messages"
+    ),
+    $last_role($items) == "assistant",
+    "last message of final_messages_1 must be the assistant answer"
+));
+
+$check_fm2 = ($items) -> (Ensure(
+    $items,
+    ListLength($items) > 0u,
+    "final_messages_2 must be non-empty"
+));
+
+-- Симметричная проверка: вызывается для каждой из двух моделей.
+$check_source = ($src, $other) -> (Ensure(
+    Ensure($src, $src != "", "answer_source_1 / answer_source_2 must be non-empty"),
+    $src != $other,
+    "answer_source_1 and answer_source_2 must differ"
 ));
 
 -- Последняя реплика ассистента в input_final_messages не нужна: она и есть
--- ответ, который сравнивают. Берём диалог из первой модели без хвоста.
-$drop_last = ($items) -> (ListTake(
-    $items,
-    IF(ListLength($items) > 0u, ListLength($items) - 1u, 0u)
-));
-
-$last_role = ($items) -> (Yson::LookupString(ListLast($items), "role") ?? "");
+-- ответ, который сравнивают. Берём диалог первой модели без хвоста.
+-- $check_fm1 уже гарантировал ListLength > 1, так что вычитание безопасно.
+$drop_last = ($items) -> (ListTake($items, ListLength($items) - 1u));
 
 -- Один элемент списка answers в том же виде, что раньше собирал build_output.
 $make_answer = ($final_messages, $answer_source, $render_data) -> (AsStruct(
@@ -66,36 +102,15 @@ $make_answer = ($final_messages, $answer_source, $render_data) -> (AsStruct(
     $null_yson AS answer_html_url
 ));
 
-$rows = (
-    SELECT
-        $make_instruct_id(
-            final_messages_1,
-            final_messages_2,
-            COALESCE(answer_source_1, ""),
-            COALESCE(answer_source_2, ""),
-            COALESCE(answer_1, ""),
-            COALESCE(answer_2, "")
-        ) AS instruct_id,
-        Yson::ConvertToList(final_messages_1) AS fm1_items,
-        Yson::ConvertToList(final_messages_2) AS fm2_items,
-        COALESCE(answer_source_1, "") AS answer_source_1,
-        COALESCE(answer_source_2, "") AS answer_source_2
-    FROM $input1
-);
-
 -- ---------------------------------------------------------------------------
--- Проверки. Падаем на всей таблице, а не молча пишем битую корзину.
+-- Единственная глобальная проверка: хеш обязан быть уникальным. Проход читает
+-- только строковые колонки, Yson-блобы в него не попадают.
 -- ---------------------------------------------------------------------------
-$stats = (
+$id_stats = (
     SELECT
         COUNT(*) AS row_count,
-        COUNT(DISTINCT instruct_id) AS unique_count,
-        COALESCE(SUM(IF(ListLength(fm1_items) > 1u, 0u, 1u)), 0u) AS short_dialog_count,
-        COALESCE(SUM(IF(ListLength(fm2_items) > 0u, 0u, 1u)), 0u) AS empty_fm2_count,
-        COALESCE(SUM(IF($last_role(fm1_items) == "assistant", 0u, 1u)), 0u) AS bad_tail_count,
-        COALESCE(SUM(IF(answer_source_1 == "" OR answer_source_2 == "", 1u, 0u)), 0u) AS empty_source_count,
-        COALESCE(SUM(IF(answer_source_1 == answer_source_2, 1u, 0u)), 0u) AS same_source_count
-    FROM $rows
+        COUNT(DISTINCT instruct_id) AS unique_count
+    FROM $ids()
 );
 
 DISCARD SELECT Ensure(
@@ -103,34 +118,20 @@ DISCARD SELECT Ensure(
     row_count > 0u AND row_count == unique_count,
     "instruct_id hash must be unique across the whole output"
 )
-FROM $stats;
-
-DISCARD SELECT Ensure(
-    row_count,
-    short_dialog_count == 0u AND empty_fm2_count == 0u,
-    "final_messages_1 must have at least two messages and final_messages_2 must be non-empty"
-)
-FROM $stats;
-
-DISCARD SELECT Ensure(
-    row_count,
-    bad_tail_count == 0u,
-    "last message of final_messages_1 must be the assistant answer"
-)
-FROM $stats;
-
-DISCARD SELECT Ensure(
-    row_count,
-    empty_source_count == 0u AND same_source_count == 0u,
-    "answer_source_1 / answer_source_2 must be non-empty and different"
-)
-FROM $stats;
+FROM $id_stats;
 
 -- ---------------------------------------------------------------------------
 -- Канонический FM: ровно 4 верхнеуровневые колонки, ответы в порядке
 -- answer_source_1 -> answer_source_2.
--- render_data у ответов нам взять неоткуда (граф не запускался), поэтому null;
--- если понадобится — подставить сюда колонку render_data из исходной таблицы.
+--
+-- Всё считается в одном SELECT по входу без промежуточных таблиц: колонку
+-- List<Yson> со строгим Yson в YT записать нельзя ("Strict Yson type is not
+-- allowed to write"), а именованное выражение с такой колонкой YQL как раз и
+-- материализовал бы во временную таблицу.
+--
+-- render_data у ответов взять неоткуда (граф не запускался), поэтому null;
+-- если понадобится — подставить третьим аргументом $make_answer колонку
+-- render_data из исходной таблицы.
 -- ---------------------------------------------------------------------------
 INSERT INTO $output1 WITH TRUNCATE
 SELECT
@@ -146,4 +147,26 @@ SELECT
         $tools AS tools
     )) AS input_meta,
     $null_yson AS input_render_data
-FROM $rows;
+FROM (
+    -- Подзапрос в FROM сливается с внешним SELECT в одну map-операцию, так что
+    -- каждый диалог парсится ровно один раз и никуда не выгружается.
+    SELECT
+        $make_instruct_id(
+            COALESCE(t.instruct_id, ""),
+            COALESCE(t.answer_source_1, ""),
+            COALESCE(t.answer_source_2, ""),
+            COALESCE(t.answer_1, ""),
+            COALESCE(t.answer_2, "")
+        ) AS instruct_id,
+        $check_fm1(Yson::ConvertToList(t.final_messages_1)) AS fm1_items,
+        $check_fm2(Yson::ConvertToList(t.final_messages_2)) AS fm2_items,
+        $check_source(
+            COALESCE(t.answer_source_1, ""),
+            COALESCE(t.answer_source_2, "")
+        ) AS answer_source_1,
+        $check_source(
+            COALESCE(t.answer_source_2, ""),
+            COALESCE(t.answer_source_1, "")
+        ) AS answer_source_2
+    FROM $input1 AS t
+) AS r;
